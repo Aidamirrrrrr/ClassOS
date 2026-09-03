@@ -170,6 +170,14 @@ where
         self.state
     }
 
+    /// Read-only access to the launcher, so the IPC wiring layer can look
+    /// up launch-specific out-of-band data (e.g. the Named Pipe name
+    /// generated for a given pid) without the supervisor itself needing to
+    /// know about IPC transport concerns.
+    pub fn launcher(&self) -> &L {
+        &self.launcher
+    }
+
     /// Called by the IPC layer once handshake completes for a connection
     /// bound to `session_id`/`pid` (independently verified — spec §59-60).
     /// Transitions `WaitingForIpc` -> `Running` if it matches the currently

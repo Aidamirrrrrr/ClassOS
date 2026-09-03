@@ -1,0 +1,233 @@
+//! Win32-backed implementations of `agent_core::traits::{SessionProvider,
+//! SessionProcessLauncher}`, adapting `windows-platform`'s raw primitives
+//! to the OS-independent trait interface the `SessionSupervisor` is
+//! written against (spec §142-146). Windows-only.
+//!
+//! `WindowsProcessLauncher` also owns Named Pipe naming: each launch gets
+//! a fresh `session_instance_id` (spec §41-42, §122) baked into
+//! `--session-id`/`--pipe` arguments passed to the Session Host, since the
+//! `ProcessSpec` given to `SessionSupervisor::new` is fixed at
+//! construction and can't vary per launch. The runtime looks up the pipe
+//! name for a given pid via `pipe_name_for` after observing
+//! `SessionHostStarted`.
+
+use std::collections::HashMap;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use agent_core::domain::{ManagedProcess, ProcessSpec, Session};
+use agent_core::error::{AgentError, Result};
+use agent_core::traits::{SessionProcessLauncher, SessionProvider};
+use windows_platform::handles::OwnedHandle;
+
+/// Discovers the physical console session via `WTSGetActiveConsoleSessionId`
+/// (spec §25-27).
+pub struct WindowsSessionProvider;
+
+impl SessionProvider for WindowsSessionProvider {
+    fn active_console_session(&self) -> Result<Option<Session>> {
+        Ok(windows_platform::sessions::active_console_session_id()
+            .map(|session_id| Session { session_id }))
+    }
+}
+
+/// Whether the Session Host is launched via the privileged
+/// `CreateProcessAsUserW` pipeline (real `service` mode, spec §14, §34-39)
+/// or as a plain child process of the current user (`run` dev mode,
+/// spec §12-13 — `WTSQueryUserToken` is not usable outside a LocalSystem
+/// caller with `SE_TCB_NAME`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchMode {
+    Privileged,
+    DevChildProcess,
+}
+
+/// Launches Session Host processes and tracks their process handles so
+/// liveness/termination checks operate only on PIDs this launcher itself
+/// produced (spec §72-74).
+pub struct WindowsProcessLauncher {
+    mode: LaunchMode,
+    session_host_path: PathBuf,
+    handles: Mutex<HashMap<u32, OwnedHandle>>,
+    dev_children: Mutex<HashMap<u32, std::process::Child>>,
+    pipe_names: Mutex<HashMap<u32, String>>,
+}
+
+impl WindowsProcessLauncher {
+    pub fn new(session_host_path: PathBuf, mode: LaunchMode) -> Self {
+        Self {
+            mode,
+            session_host_path,
+            handles: Mutex::new(HashMap::new()),
+            dev_children: Mutex::new(HashMap::new()),
+            pipe_names: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The Named Pipe name generated for the launch that produced `pid`,
+    /// if still tracked.
+    pub fn pipe_name_for(&self, pid: u32) -> Option<String> {
+        self.pipe_names
+            .lock()
+            .expect("WindowsProcessLauncher mutex poisoned")
+            .get(&pid)
+            .cloned()
+    }
+
+    fn build_args(session_id: u32, pipe_name: &str) -> Vec<OsString> {
+        vec![
+            OsString::from("--session-id"),
+            OsString::from(session_id.to_string()),
+            OsString::from("--pipe"),
+            OsString::from(pipe_name),
+        ]
+    }
+
+    fn launch_privileged(&self, session_id: u32, pipe_name: &str) -> Result<ManagedProcess> {
+        let args = Self::build_args(session_id, pipe_name);
+        let launched = windows_platform::process::launch_in_session(
+            session_id,
+            &self.session_host_path,
+            &args,
+        )
+        .map_err(|err| AgentError::ProcessLaunchFailed {
+            session_id,
+            reason: err.to_string(),
+        })?;
+
+        let pid = launched.pid;
+        self.handles
+            .lock()
+            .expect("WindowsProcessLauncher mutex poisoned")
+            .insert(pid, launched.process_handle);
+        Ok(ManagedProcess { session_id, pid })
+    }
+
+    fn launch_dev_child(&self, session_id: u32, pipe_name: &str) -> Result<ManagedProcess> {
+        let args = Self::build_args(session_id, pipe_name);
+        let child = std::process::Command::new(&self.session_host_path)
+            .args(&args)
+            .spawn()
+            .map_err(|err| AgentError::ProcessLaunchFailed {
+                session_id,
+                reason: err.to_string(),
+            })?;
+        let pid = child.id();
+        self.dev_children
+            .lock()
+            .expect("WindowsProcessLauncher mutex poisoned")
+            .insert(pid, child);
+        Ok(ManagedProcess { session_id, pid })
+    }
+}
+
+impl SessionProcessLauncher for WindowsProcessLauncher {
+    fn launch(&self, session_id: u32, _spec: &ProcessSpec) -> Result<ManagedProcess> {
+        let instance_id = uuid::Uuid::new_v4();
+        let pipe_name = windows_platform::pipes::pipe_name(session_id, &instance_id.to_string());
+
+        let managed = match self.mode {
+            LaunchMode::Privileged => self.launch_privileged(session_id, &pipe_name)?,
+            LaunchMode::DevChildProcess => self.launch_dev_child(session_id, &pipe_name)?,
+        };
+
+        self.pipe_names
+            .lock()
+            .expect("WindowsProcessLauncher mutex poisoned")
+            .insert(managed.pid, pipe_name);
+        Ok(managed)
+    }
+
+    fn is_alive(&self, pid: u32) -> bool {
+        match self.mode {
+            LaunchMode::Privileged => {
+                let handles = self
+                    .handles
+                    .lock()
+                    .expect("WindowsProcessLauncher mutex poisoned");
+                match handles.get(&pid) {
+                    Some(handle) => {
+                        windows_platform::process::is_process_alive(handle).unwrap_or(false)
+                    }
+                    None => false,
+                }
+            }
+            LaunchMode::DevChildProcess => {
+                let mut children = self
+                    .dev_children
+                    .lock()
+                    .expect("WindowsProcessLauncher mutex poisoned");
+                match children.get_mut(&pid) {
+                    Some(child) => matches!(child.try_wait(), Ok(None)),
+                    None => false,
+                }
+            }
+        }
+    }
+
+    fn terminate(&self, pid: u32) -> Result<()> {
+        self.pipe_names
+            .lock()
+            .expect("WindowsProcessLauncher mutex poisoned")
+            .remove(&pid);
+
+        match self.mode {
+            LaunchMode::Privileged => {
+                let mut handles = self
+                    .handles
+                    .lock()
+                    .expect("WindowsProcessLauncher mutex poisoned");
+                if let Some(handle) = handles.remove(&pid) {
+                    windows_platform::process::terminate_process(&handle).map_err(|err| {
+                        AgentError::ProcessLaunchFailed {
+                            session_id: 0,
+                            reason: err.to_string(),
+                        }
+                    })?;
+                }
+            }
+            LaunchMode::DevChildProcess => {
+                let mut children = self
+                    .dev_children
+                    .lock()
+                    .expect("WindowsProcessLauncher mutex poisoned");
+                if let Some(mut child) = children.remove(&pid) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Resolves the SDDL SID string of the user occupying `session_id`, for
+/// building the pipe ACL (spec §46-47). Only meaningful in `Privileged`
+/// mode; dev mode uses the current process's own identity implicitly
+/// (spec §96 — "pipe may use ACL only of the current user").
+pub fn user_sid_for_session(session_id: u32) -> Result<String> {
+    let token = windows_platform::process::query_user_token(session_id).map_err(|err| {
+        tracing::warn!(session_id, error = %err, "query_user_token failed");
+        AgentError::UserTokenFailed { session_id }
+    })?;
+    windows_platform::security::user_sid_string(token.raw()).map_err(|err| {
+        tracing::warn!(session_id, error = %err, "user_sid_string failed");
+        AgentError::UserTokenFailed { session_id }
+    })
+}
+
+/// Locates the Session Host executable next to the currently running
+/// `classos-service.exe` (spec §137: only launched from the trusted
+/// ClassOS installation directory, never a writable temp/user directory).
+pub fn default_session_host_path() -> Result<PathBuf> {
+    let exe = std::env::current_exe().map_err(AgentError::Io)?;
+    let dir = exe.parent().ok_or_else(|| AgentError::Config {
+        reason: "classos-service.exe has no parent directory".to_string(),
+    })?;
+    Ok(session_host_binary_path(dir))
+}
+
+fn session_host_binary_path(dir: &Path) -> PathBuf {
+    dir.join("classos-session.exe")
+}

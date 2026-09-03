@@ -30,6 +30,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "windows",
  "windows-platform",
  "windows-service",
 ]

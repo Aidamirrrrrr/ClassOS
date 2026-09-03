@@ -12,6 +12,7 @@ name = "classos-service"
 path = "src/main.rs"
 
 [target."cfg(windows)".dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation"] }
 windows-platform = { version = "0.1.0", path = "../windows-platform" }
 windows-service = "0.8.1"
 

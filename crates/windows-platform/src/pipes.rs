@@ -88,11 +88,19 @@ pub fn create_pipe_server(
 
 /// Resolves the process id of the process connected to `pipe_handle`
 /// (spec §60, preferred over trusting client-supplied PID/session values).
-pub fn client_process_id(pipe_handle: &OwnedHandle) -> Result<u32> {
+/// Takes a borrowed raw `HANDLE` rather than `&OwnedHandle` so it can be
+/// used both with handles owned by this crate and with a pipe handle owned
+/// by an external async runtime wrapper (e.g. tokio's
+/// `NamedPipeServer::as_raw_handle`), which does not transfer ownership.
+///
+/// # Safety
+/// `pipe_handle` must be a valid, open Named Pipe server handle for the
+/// duration of this call.
+pub unsafe fn client_process_id(pipe_handle: HANDLE) -> Result<u32> {
     let mut pid: u32 = 0;
-    // SAFETY: `pipe_handle` is a valid, connected named pipe server handle
-    // for the duration of this call.
-    unsafe { GetNamedPipeClientProcessId(pipe_handle.raw(), &mut pid) }.map_err(|source| {
+    // SAFETY: caller guarantees `pipe_handle` is valid for this call, per
+    // this function's own safety contract.
+    unsafe { GetNamedPipeClientProcessId(pipe_handle, &mut pid) }.map_err(|source| {
         PlatformError::WindowsApi {
             api: "GetNamedPipeClientProcessId",
             source,
