@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package classos.network.v1;
+
+// Envelope оборачивает сетевые сообщения между Teacher Console и Student Agent.
+message Envelope {
+  uint32 protocol_version = 1;
+  string message_id = 2;
+  int64 timestamp_ms = 3;
+
+  oneof payload {
+    DeviceHello device_hello = 10;
+    TeacherHello teacher_hello = 11;
+    EnrollmentRequest enrollment_request = 12;
+    EnrollmentResult enrollment_result = 13;
+    DeviceStatus device_status = 14;
+    Heartbeat heartbeat = 15;
+    UpgradeRequired upgrade_required = 16;
+  }
+}
+
+// Начальное описание Student Agent и поддерживаемого им диапазона протокола.
+message DeviceHello {
+  string device_id = 1;
+  string hostname = 2;
+  string agent_version = 3;
+  string os_version = 4;
+  repeated string capabilities = 5;
+  uint32 min_protocol = 6;
+  uint32 max_protocol = 7;
+}
+
+// Начальное описание Teacher Console и поддерживаемого ей диапазона протокола.
+message TeacherHello {
+  string teacher_session_id = 1;
+  uint32 min_protocol = 2;
+  uint32 max_protocol = 3;
+}
+
+// Запрос локального enrollment. Публичный ключ передаётся в формате DER.
+message EnrollmentRequest {
+  string enrollment_code = 1;
+  string device_id = 2;
+  bytes device_public_key_der = 3;
+  string organization_id = 4;
+  string branch_id = 5;
+}
+
+// Результат enrollment с машиночитаемым кодом и данными локального issuer.
+message EnrollmentResult {
+  bool success = 1;
+  EnrollmentErrorCode error_code = 2;
+  bytes issued_credential = 3;
+  bytes issuer_public_key_der = 4;
+  int64 expires_at_unix_ms = 5;
+}
+
+// Минимальный живой статус устройства в рамках T1.
+message DeviceStatus {
+  string device_id = 1;
+  DeviceOnlineState state = 2;
+  string agent_version = 3;
+}
+
+// Heartbeat поддерживает обнаружение потери соединения в обе стороны.
+message Heartbeat {
+  uint64 sequence = 1;
+  int64 sent_at_unix_ms = 2;
+}
+
+// Явный ответ при отсутствии общей версии протокола.
+message UpgradeRequired {
+  uint32 min_protocol = 1;
+  uint32 max_protocol = 2;
+}
+
+enum EnrollmentErrorCode {
+  ENROLLMENT_ERROR_CODE_UNSPECIFIED = 0;
+  ENROLLMENT_ERROR_CODE_INVALID = 1;
+  ENROLLMENT_ERROR_CODE_EXPIRED = 2;
+  ENROLLMENT_ERROR_CODE_ALREADY_USED = 3;
+  ENROLLMENT_ERROR_CODE_IDENTITY_MISMATCH = 4;
+  ENROLLMENT_ERROR_CODE_INTERNAL = 5;
+}
+
+enum DeviceOnlineState {
+  DEVICE_ONLINE_STATE_UNSPECIFIED = 0;
+  DEVICE_ONLINE_STATE_ONLINE = 1;
+  DEVICE_ONLINE_STATE_OFFLINE = 2;
+}

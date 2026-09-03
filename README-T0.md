@@ -1,6 +1,6 @@
-# ClassOS T0 — Service / Session Host
+# ClassOS T0 — служба и хост пользовательской сессии
 
-Status per `docs/specs/BACKLOG.md`: **Impl: done; Runtime validation: CI only.**
+Статус по `docs/specs/BACKLOG.md`: **реализация завершена; runtime-проверка выполнена только в CI.**
 This document describes what has been built and validated *from a
 non-Windows development machine*. Per spec §2 and §185, T0 can only be
 declared complete after the full Definition-of-Done chain (install → reboot
