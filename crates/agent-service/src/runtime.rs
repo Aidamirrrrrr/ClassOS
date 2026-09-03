@@ -632,6 +632,17 @@ async fn serve_heartbeat(
             received = connection.recv() => {
                 match received? {
                     Some(message) if matches!(message.payload, Some(protocol::network::envelope::Payload::Heartbeat(_))) => last_seen = std::time::Instant::now(),
+                    Some(message) if matches!(message.payload, Some(protocol::network::envelope::Payload::ScreenshotRequest(_))) => {
+                        connection.send(&protocol::network::Envelope {
+                            protocol_version: protocol::network::PROTOCOL_VERSION,
+                            message_id: new_message_id(),
+                            timestamp_ms: now_unix_ms(),
+                            payload: Some(protocol::network::envelope::Payload::CaptureError(protocol::network::CaptureError {
+                                code: "CAPTURE_PIPELINE_NOT_READY".to_owned(),
+                                message: "маршрутизация capture в Session Host ещё не завершена".to_owned(),
+                            })),
+                        }).await?;
+                    }
                     Some(_) => {}
                     None => return Ok(()),
                 }
