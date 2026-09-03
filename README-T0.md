@@ -66,6 +66,7 @@ used throughout:
 - A second, independent rustup-managed toolchain (`brew install rustup`,
   kept out of `PATH` by default) provides the
   `x86_64-pc-windows-msvc` target for type-checking Windows-only code:
+
   ```bash
   rustup toolchain install stable --profile minimal
   rustup target add x86_64-pc-windows-msvc
@@ -105,6 +106,31 @@ so `cargo build`/`cargo test`/running the binaries for the msvc target is
 categorically impossible here. Every commit in this milestone's history
 was validated with both command sets (host test suite green, msvc
 check+clippy green, zero warnings) before being made.
+
+**What actually builds and links into real Windows binaries on this host**
+(beyond type-checking): [`cargo-xwin`](https://github.com/rust-cross/cargo-xwin)
+cross-links against a downloaded Windows SDK/CRT using `rust-lld`, so real
+PE32+ `.exe` files can be produced without an MSVC installation or a
+Windows machine:
+
+```bash
+brew install llvm                       # provides clang-cl (xwin needs it present, even though linking uses rust-lld)
+cargo install cargo-xwin
+rustup component add llvm-tools-preview clippy   # rust-lld + clippy for the rustup toolchain
+
+PATH="/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:$PATH" \
+  cargo xwin build --target x86_64-pc-windows-msvc --workspace
+PATH="/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:$PATH" \
+  cargo xwin clippy --target x86_64-pc-windows-msvc --workspace --all-targets -- -D warnings
+```
+
+This is strictly stronger than plain `cargo check`: it catches link-time
+errors (missing symbols, ABI mismatches) that type-checking alone cannot.
+It still cannot **run** anything — there is no Windows execution
+environment on this machine, so the resulting `.exe` files have never been
+launched, and none of the SCM/WTS/session/IPC runtime behavior has been
+exercised. That gap is closed by testing on a real Windows VM/VPS (see
+"What remains before T1" below).
 
 **What requires a real Windows machine** (or the `windows-latest` CI job,
 see `.github/workflows/rust-ci.yml`): everything in "Known limitations"
@@ -200,9 +226,10 @@ Per spec §175, plus limitations specific to how this milestone was built:
   correctly out of scope for T0 (spec §3, §99-127).
 - **This entire milestone was built and validated exclusively on macOS.**
   Every line touching Win32 (`windows-platform`, and the `#[cfg(windows)]`
-  modules in `agent-service`/`agent-session`) has only ever been
-  type-checked via the `x86_64-pc-windows-msvc` target — it has never been
-  compiled to a real binary, linked, executed, or tested. Nobody should
+  modules in `agent-service`/`agent-session`) has been type-checked via the
+  `x86_64-pc-windows-msvc` target and, via `cargo-xwin`, actually compiled
+  and linked into real PE32+ `classos-service.exe`/`classos-session.exe`
+  binaries — but those binaries have never been **executed**. Nobody should
   treat T0 as "done" based on this work. Per spec §2/§185, the Definition
   of Done requires the full reboot → login → heartbeat → crash → restart →
   logout → new-user-login chain to work unattended on a real Windows 11
