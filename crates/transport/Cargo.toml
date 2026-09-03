@@ -5,7 +5,9 @@ edition.workspace = true
 
 [dependencies]
 async-trait = "0.1.92"
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast", "zeroize"] }
 fastrand = "2.5.0"
+getrandom = "0.4.3"
 prost = "0.14.4"
 protocol = { version = "0.1.0", path = "../protocol" }
 rcgen = "0.14.10"

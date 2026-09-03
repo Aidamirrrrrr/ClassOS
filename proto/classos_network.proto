@@ -46,6 +46,8 @@ message TeacherHello {
   string teacher_session_id = 1;
   uint32 min_protocol = 2;
   uint32 max_protocol = 3;
+  bytes authorization_credential = 4;
+  bytes signature = 5;
 }
 
 // Запрос локального enrollment. Публичный ключ передаётся в формате DER.
@@ -55,6 +57,7 @@ message EnrollmentRequest {
   bytes device_public_key_der = 3;
   string organization_id = 4;
   string branch_id = 5;
+  bytes device_certificate_der = 6;
 }
 
 // Результат enrollment с машиночитаемым кодом и данными локального issuer.
