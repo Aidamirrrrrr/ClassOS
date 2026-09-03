@@ -6,6 +6,24 @@ on:
   pull_request:
 
 jobs:
+  teacher-console:
+    name: ubuntu-latest (Teacher Console typecheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.10.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/teacher/pnpm-lock.yaml
+      - name: Install frontend dependencies
+        run: pnpm --dir apps/teacher install --ignore-scripts --frozen-lockfile
+      - name: TypeScript typecheck
+        run: pnpm --dir apps/teacher exec tsc --noEmit
+
   windows:
     name: windows-latest (build + test + lint)
     runs-on: windows-latest

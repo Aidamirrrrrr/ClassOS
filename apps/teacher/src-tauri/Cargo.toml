@@ -1,0 +1,30 @@
+[package]
+name = "appsteacher"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+[workspace]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "appsteacher_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+transport = { version = "0.1.0", path = "../../../crates/transport" }
+agent-core = { version = "0.1.0", path = "../../../crates/agent-core" }
+tokio = { version = "1.53.1", features = ["rt", "macros", "time", "net", "sync"] }
+protocol = { version = "0.1.0", path = "../../../crates/protocol" }

@@ -1,0 +1,8 @@
+{
+  "name": "classos",
+  "private": true,
+  "packageManager": "pnpm@11.10.0",
+  "scripts": {
+    "teacher:typecheck": "pnpm --dir apps/teacher exec tsc --noEmit"
+  }
+}

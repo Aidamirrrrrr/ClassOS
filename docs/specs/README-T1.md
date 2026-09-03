@@ -1,6 +1,6 @@
 # ClassOS T1 — сеть и обнаружение устройств
 
-Статус по `docs/specs/BACKLOG.md`: **реализация в процессе; runtime-проверка не начата.**
+Статус по `docs/specs/BACKLOG.md`: **реализация в процессе; автоматические проверки проходят, runtime-приёмка не начата.**
 
 ## Принятые границы реализации
 
@@ -40,17 +40,15 @@ and Transport Protocol Port Number Registry IANA. Это не исключает
 - отдельный bootstrap-режим, допустимый только для enrollment.
 - control listener Agent с публикацией discovery только после успешного bind;
 - явный `UpgradeRequired` при несовместимых версиях протокола;
-- service-side обработчик enrollment и online heartbeat.
-
-Broadcaster ещё не подключён к Windows Service: по ADR-0009 Service не должен
-рекламировать control-порт до успешного запуска TLS listener.
+- service-side обработчик enrollment и online heartbeat;
+- подписанный Teacher credential и проверка application-level TeacherHello;
+- минимальный Tauri Teacher Console: discovery, выпуск одноразового кода и enrollment.
 
 ## Пока не реализовано
 
-- выпуск локального credential после проверки enrollment-кода;
-- application gate и mutual authentication control-канала после enrollment;
-- heartbeat, offline detection и reconnect;
-- Teacher Console.
+- полноценный UI списка устройств, reconnect и отображение всех состояний state machine;
+- обновление/отзыв credential и ротация ключа Teacher в следующих milestone'ах;
+- интеграционная проверка двух реальных Windows-компьютеров в одной LAN.
 
 ## Runtime validation
 
