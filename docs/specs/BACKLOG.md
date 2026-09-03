@@ -11,8 +11,8 @@
 | Milestone | Spec | Impl | Runtime validation | Файл |
 | --- | --- | --- | --- | --- |
 | T0 — Service / Session Host | spec-ready | done | CI only | [T0_SERVICE_SESSION_HOST_SPEC.md](T0_SERVICE_SESSION_HOST_SPEC.md) |
-| T1 — Network & Device Discovery | spec-ready | in progress | not started | [T1_NETWORK_AND_DEVICE_DISCOVERY_SPEC.md](T1_NETWORK_AND_DEVICE_DISCOVERY_SPEC.md) |
-| T2 — Screen Capture (DXGI) | spec-ready | not started | not started | [T2_SCREEN_CAPTURE_DXGI_SPEC.md](T2_SCREEN_CAPTURE_DXGI_SPEC.md) |
+| T1 — Network & Device Discovery | spec-ready | done | CI only | [T1_NETWORK_AND_DEVICE_DISCOVERY_SPEC.md](T1_NETWORK_AND_DEVICE_DISCOVERY_SPEC.md) |
+| T2 — Screen Capture (DXGI) | spec-ready | in progress | not started | [T2_SCREEN_CAPTURE_DXGI_SPEC.md](T2_SCREEN_CAPTURE_DXGI_SPEC.md) |
 | T3 — Continuous Streaming | spec-ready | not started | not started | [T3_CONTINUOUS_STREAMING_SPEC.md](T3_CONTINUOUS_STREAMING_SPEC.md) |
 | T4 — Remote Control | spec-ready | not started | not started | [T4_REMOTE_CONTROL_SPEC.md](T4_REMOTE_CONTROL_SPEC.md) |
 | — CHECKPOINT #1 demo (реальному преподавателю) | — | — | — | `product/03_EXECUTION_PLAN_90_DAYS.md` §15 |
