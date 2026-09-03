@@ -22,6 +22,20 @@ pub fn device_id_path() -> PathBuf {
         .join("device-id")
 }
 
+/// Путь к публичному сертификату device identity T1.
+pub fn device_certificate_path() -> PathBuf {
+    PathBuf::from(PROGRAM_DATA_DIR)
+        .join("state")
+        .join("device-certificate.der")
+}
+
+/// Путь к закрытому ключу device identity, защищённому Windows DPAPI.
+pub fn protected_device_key_path() -> PathBuf {
+    PathBuf::from(PROGRAM_DATA_DIR)
+        .join("state")
+        .join("device-key.dpapi")
+}
+
 /// Каталог журналов.
 pub fn log_dir() -> PathBuf {
     PathBuf::from(PROGRAM_DATA_DIR).join("logs")

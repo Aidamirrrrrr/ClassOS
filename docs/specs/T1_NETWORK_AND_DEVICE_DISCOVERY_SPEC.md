@@ -129,6 +129,10 @@ offline = lastSeen > timeout (предложение: 15 сек)
 
 При первом запуске (после T0 device_id уже существует как случайный UUID — см. `T0_*` §120) Agent генерирует криптографическую key pair для identity. Предпочтительно: несимвольный ключ через Windows CNG/machine key store, non-exportable, где возможно (`01_TECHNICAL_ARCHITECTURE.md` §45). TPM-backed key — будущее улучшение, не блокер T1.
 
+Для T1 закрытый PKCS#8 защищается Windows DPAPI в machine scope; ограничения и
+обязательное повторное рассмотрение CNG перед production зафиксированы в
+ADR-0010.
+
 Приватный ключ **никогда**:
 
 - не сериализуется в IPC;

@@ -339,7 +339,28 @@ pub async fn run(
     let service_instance_id = agent_core::config::new_service_instance_id().to_string();
     match agent_core::config::load_or_create_device_id(&agent_core::config::device_id_path()) {
         Ok(device_id) => {
-            tracing::info!(%device_id, %service_instance_id, event = "SERVICE_IDENTITY_READY")
+            match crate::identity_store::load_or_create(
+                &device_id.to_string(),
+                &agent_core::config::device_certificate_path(),
+                &agent_core::config::protected_device_key_path(),
+            ) {
+                Ok(identity) => {
+                    let fingerprint = identity
+                        .certificate_fingerprint()
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>();
+                    tracing::info!(
+                        %device_id,
+                        %service_instance_id,
+                        certificate_fingerprint = fingerprint,
+                        event = "SERVICE_IDENTITY_READY"
+                    );
+                }
+                Err(err) => {
+                    tracing::error!(error = %err, %device_id, event = "SERVICE_IDENTITY_FAILED")
+                }
+            }
         }
         Err(err) => tracing::error!(error = %err, event = "SERVICE_IDENTITY_FAILED"),
     }

@@ -37,5 +37,6 @@ ADR фиксирует **необратимое или дорогое в раз�
 | [0007](0007-t1-local-enrollment-stub.md) | T1 local enrollment stub, заменяется Cloud issuer в T8 | Accepted |
 | [0008](0008-monorepo-tooling.md) | Монорепозиторий: pnpm workspaces + Cargo workspace, без Turborepo на старте | Accepted |
 | [0009](0009-t1-network-transport.md) | Сетевой транспорт и discovery для T1 | Accepted |
+| [0010](0010-t1-device-key-storage.md) | Хранение закрытого ключа устройства в T1 | Accepted |
 
-Следующий свободный номер: **0010**.
+Следующий свободный номер: **0011**.

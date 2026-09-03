@@ -3,6 +3,8 @@
 //! чтобы `cargo build` и `cargo run` оставались работоспособными.
 
 #[cfg(windows)]
+mod identity_store;
+#[cfg(windows)]
 mod ipc;
 #[cfg(windows)]
 mod runtime;

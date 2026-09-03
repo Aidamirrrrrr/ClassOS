@@ -31,14 +31,17 @@ and Transport Protocol Port Number Registry IANA. Это не исключает
 - публичное `ClassOSDeviceAnnouncement` без credentials и пользовательских данных;
 - UDP broadcaster с интервалом 3–5 секунд и multicast TTL `1`;
 - UDP listener, структурная валидация и сохранение фактического адреса источника.
+- одноразовые enrollment-коды с TTL и привязкой к контексту;
+- connection state machine и offline detection;
+- генерация ECDSA device identity и SHA-256 fingerprint сертификата;
+- защищённое DPAPI machine-scope хранение приватного ключа на Windows.
 
 Broadcaster ещё не подключён к Windows Service: по ADR-0009 Service не должен
 рекламировать control-порт до успешного запуска TLS listener.
 
 ## Пока не реализовано
 
-- безопасное хранение device identity;
-- one-time enrollment;
+- выпуск локального credential после проверки enrollment-кода;
 - TLS control-канал и проверка peer identity;
 - heartbeat, offline detection и reconnect;
 - Teacher Console.

@@ -4,6 +4,7 @@
 //! Крейт предоставляет только Windows-примитивы без продуктовых сущностей
 //! и собирается для target `x86_64-pc-windows-msvc`.
 
+pub mod crypto;
 pub mod error;
 pub mod handles;
 pub mod pipes;

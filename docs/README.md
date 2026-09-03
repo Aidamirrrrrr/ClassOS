@@ -30,7 +30,8 @@ docs/
 │       ├── 0006-policy-engine-abstraction.md
 │       ├── 0007-t1-local-enrollment-stub.md
 │       ├── 0008-monorepo-tooling.md
-│       └── 0009-t1-network-transport.md
+│       ├── 0009-t1-network-transport.md
+│       └── 0010-t1-device-key-storage.md
 │
 └── specs/                                 ← ЧТО именно реализовать, milestone за milestone
     ├── BACKLOG.md                         статус всех milestone'ов T0–T8+
