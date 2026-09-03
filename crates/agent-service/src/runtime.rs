@@ -6,6 +6,8 @@
 //! соединения целиком владеет одним Named Pipe и сообщает только Ready/Lost.
 
 use std::collections::{HashMap, HashSet};
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use agent_core::domain::ProcessSpec;
@@ -15,6 +17,7 @@ use protocol::envelope::Payload;
 use protocol::{Envelope, GetSessionInfo, LOCAL_PROTOCOL_VERSION, Ping, ServiceHello, Shutdown};
 use tokio::sync::mpsc;
 use tokio::time::{MissedTickBehavior, interval};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use windows_service::service::{
     ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
@@ -337,6 +340,7 @@ pub async fn run(
 
     let mut supervisor: Supervisor = SessionSupervisor::new(provider, launcher, spec);
     let service_instance_id = agent_core::config::new_service_instance_id().to_string();
+    let network_cancellation = CancellationToken::new();
     match agent_core::config::load_or_create_device_id(&agent_core::config::device_id_path()) {
         Ok(device_id) => {
             match crate::identity_store::load_or_create(
@@ -355,6 +359,11 @@ pub async fn run(
                         %service_instance_id,
                         certificate_fingerprint = fingerprint,
                         event = "SERVICE_IDENTITY_READY"
+                    );
+                    start_network(
+                        device_id.to_string(),
+                        Arc::new(identity),
+                        network_cancellation.child_token(),
                     );
                 }
                 Err(err) => {
@@ -380,6 +389,7 @@ pub async fn run(
             maybe_event = service_events.recv() => {
                 match maybe_event {
                     Some(ServiceEvent::Stop) | Some(ServiceEvent::Shutdown) => {
+                        network_cancellation.cancel();
                         graceful_shutdown(&mut supervisor, &connections, status_handle).await;
                         return;
                     }
@@ -413,6 +423,211 @@ pub async fn run(
                         }
                     }
                     None => {}
+                }
+            }
+        }
+    }
+}
+
+fn start_network(
+    device_id: String,
+    identity: Arc<transport::DeviceIdentity>,
+    cancellation: CancellationToken,
+) {
+    tokio::spawn(async move {
+        let bind_addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, transport::DEFAULT_CONTROL_PORT));
+        let server = match transport::TlsControlServer::bind(bind_addr, &identity).await {
+            Ok(server) => server,
+            Err(err) => {
+                tracing::error!(error = %err, event = "CONTROL_LISTENER_FAILED");
+                return;
+            }
+        };
+        let control_port = match server.local_addr() {
+            Ok(addr) => addr.port(),
+            Err(err) => {
+                tracing::error!(error = %err, event = "CONTROL_LISTENER_FAILED");
+                return;
+            }
+        };
+        tracing::info!(port = control_port, event = "CONTROL_LISTENER_READY");
+
+        let announcement = transport::new_announcement(
+            device_id.clone(),
+            std::env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".to_owned()),
+            String::new(),
+            env!("CARGO_PKG_VERSION").to_owned(),
+            transport::local_ipv4()
+                .map(|ip| ip.to_string())
+                .unwrap_or_default(),
+            control_port,
+        );
+        let discovery_cancel = cancellation.child_token();
+        tokio::spawn(async move {
+            if let Err(err) = transport::announce_loop(
+                announcement,
+                transport::DiscoveryConfig::default(),
+                discovery_cancel,
+            )
+            .await
+            {
+                tracing::error!(error = %err, event = "DISCOVERY_FAILED");
+            }
+        });
+
+        loop {
+            tokio::select! {
+                _ = cancellation.cancelled() => break,
+                accepted = server.accept() => match accepted {
+                    Ok((connection, peer)) => {
+                        let identity = Arc::clone(&identity);
+                        let device_id = device_id.clone();
+                        tokio::spawn(async move {
+                            if let Err(err) = handle_control_connection(connection, peer, device_id, identity).await {
+                                tracing::debug!(error = %err, event = "CONTROL_CONNECTION_CLOSED");
+                            }
+                        });
+                    }
+                    Err(err) => tracing::warn!(error = %err, event = "CONTROL_ACCEPT_FAILED"),
+                }
+            }
+        }
+    });
+}
+
+async fn handle_control_connection(
+    mut connection: transport::ServerControlConnection,
+    peer: SocketAddr,
+    device_id: String,
+    identity: Arc<transport::DeviceIdentity>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let now = now_unix_ms();
+    connection
+        .send(&transport::build_device_hello(
+            new_message_id(),
+            now,
+            device_id.clone(),
+            std::env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".to_owned()),
+            env!("CARGO_PKG_VERSION").to_owned(),
+            "Windows".to_owned(),
+        ))
+        .await?;
+
+    if let Some(material) = crate::identity_store::load_enrollment()? {
+        let Some(hello) = connection.recv().await? else {
+            return Ok(());
+        };
+        let verified = match transport::verify_teacher_hello(
+            &hello,
+            &material.issuer_public_key,
+            &device_id,
+            identity.certificate_der(),
+            now_unix_ms(),
+        ) {
+            Ok(verified) => verified,
+            Err(transport::HandshakeError::UpgradeRequired(required)) => {
+                connection
+                    .send(&protocol::network::Envelope {
+                        protocol_version: protocol::network::PROTOCOL_VERSION,
+                        message_id: new_message_id(),
+                        timestamp_ms: now_unix_ms(),
+                        payload: Some(protocol::network::envelope::Payload::UpgradeRequired(
+                            required,
+                        )),
+                    })
+                    .await?;
+                return Ok(());
+            }
+            Err(err) => return Err(Box::new(err)),
+        };
+        tracing::info!(peer = %peer, teacher_session_id = %verified.teacher_session_id, event = "CONTROL_AUTHENTICATED");
+        let status = protocol::network::Envelope {
+            protocol_version: protocol::network::PROTOCOL_VERSION,
+            message_id: new_message_id(),
+            timestamp_ms: now_unix_ms(),
+            payload: Some(protocol::network::envelope::Payload::DeviceStatus(
+                protocol::network::DeviceStatus {
+                    device_id,
+                    state: protocol::network::DeviceOnlineState::Online as i32,
+                    agent_version: env!("CARGO_PKG_VERSION").to_owned(),
+                },
+            )),
+        };
+        connection.send(&status).await?;
+        serve_heartbeat(connection).await?;
+        return Ok(());
+    }
+
+    let Some(code) = crate::identity_store::load_pending_enrollment_code()? else {
+        tracing::debug!(peer = %peer, event = "CONTROL_REJECTED_NOT_ENROLLED");
+        return Ok(());
+    };
+    let request = protocol::network::Envelope {
+        protocol_version: protocol::network::PROTOCOL_VERSION,
+        message_id: new_message_id(),
+        timestamp_ms: now,
+        payload: Some(protocol::network::envelope::Payload::EnrollmentRequest(
+            protocol::network::EnrollmentRequest {
+                enrollment_code: code,
+                device_id: device_id.clone(),
+                device_public_key_der: identity.certificate_der().to_vec(),
+                organization_id: "default".to_owned(),
+                branch_id: "default".to_owned(),
+                device_certificate_der: identity.certificate_der().to_vec(),
+            },
+        )),
+    };
+    connection.send(&request).await?;
+    let Some(result) = connection.recv().await? else {
+        return Ok(());
+    };
+    let Some(protocol::network::envelope::Payload::EnrollmentResult(result)) = result.payload
+    else {
+        return Ok(());
+    };
+    if !result.success || result.issuer_public_key_der.len() != 32 {
+        tracing::warn!(peer = %peer, event = "ENROLLMENT_REJECTED");
+        return Ok(());
+    }
+    let issuer_public_key: [u8; 32] = result.issuer_public_key_der.as_slice().try_into().unwrap();
+    transport::DeviceCredential::decode_and_verify(
+        &result.issued_credential,
+        &issuer_public_key,
+        &device_id,
+        identity.certificate_der(),
+        now_unix_ms(),
+    )?;
+    crate::identity_store::save_enrollment(&crate::identity_store::EnrollmentMaterial {
+        credential: result.issued_credential,
+        issuer_public_key,
+    })?;
+    tracing::info!(peer = %peer, event = "ENROLLMENT_ACCEPTED");
+    Ok(())
+}
+
+async fn serve_heartbeat(
+    mut connection: transport::ServerControlConnection,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut tick = tokio::time::interval(agent_core::network::NETWORK_HEARTBEAT_INTERVAL);
+    let mut last_seen = std::time::Instant::now();
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                if last_seen.elapsed() > agent_core::network::NETWORK_OFFLINE_TIMEOUT { return Ok(()); }
+                connection.send(&protocol::network::Envelope {
+                    protocol_version: protocol::network::PROTOCOL_VERSION,
+                    message_id: new_message_id(),
+                    timestamp_ms: now_unix_ms(),
+                    payload: Some(protocol::network::envelope::Payload::Heartbeat(protocol::network::Heartbeat {
+                        sequence: last_seen.elapsed().as_secs(), sent_at_unix_ms: now_unix_ms(),
+                    })),
+                }).await?;
+            }
+            received = connection.recv() => {
+                match received? {
+                    Some(message) if matches!(message.payload, Some(protocol::network::envelope::Payload::Heartbeat(_))) => last_seen = std::time::Instant::now(),
+                    Some(_) => {}
+                    None => return Ok(()),
                 }
             }
         }

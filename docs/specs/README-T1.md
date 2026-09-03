@@ -38,6 +38,9 @@ and Transport Protocol Port Number Registry IANA. Это не исключает
 - TLS/TCP listener и клиент с length-prefixed protobuf framing;
 - pinning SHA-256 fingerprint и отказ при подмене сертификата;
 - отдельный bootstrap-режим, допустимый только для enrollment.
+- control listener Agent с публикацией discovery только после успешного bind;
+- явный `UpgradeRequired` при несовместимых версиях протокола;
+- service-side обработчик enrollment и online heartbeat.
 
 Broadcaster ещё не подключён к Windows Service: по ADR-0009 Service не должен
 рекламировать control-порт до успешного запуска TLS listener.

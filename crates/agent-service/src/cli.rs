@@ -10,12 +10,17 @@ pub struct Cli {
     pub command: Command,
 }
 
-#[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// Запустить для разработки на переднем плане без LocalSystem (спека §13).
     Run,
     /// Запустить через Windows SCM от имени LocalSystem (спека §14).
     Service,
+    /// Сохранить одноразовый enrollment-код.
+    Enroll {
+        #[arg(long)]
+        code: String,
+    },
 }
 
 #[cfg(test)]
@@ -32,5 +37,16 @@ mod tests {
     fn parses_service() {
         let cli = Cli::parse_from(["classos-service", "service"]);
         assert_eq!(cli.command, Command::Service);
+    }
+
+    #[test]
+    fn parses_enrollment_code() {
+        let cli = Cli::parse_from(["classos-service", "enroll", "--code", "ABC123"]);
+        assert_eq!(
+            cli.command,
+            Command::Enroll {
+                code: "ABC123".to_owned()
+            }
+        );
     }
 }

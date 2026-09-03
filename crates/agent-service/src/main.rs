@@ -50,6 +50,13 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Command::Enroll { code } => {
+            if let Err(err) = identity_store::save_pending_enrollment_code(&code) {
+                eprintln!("не удалось сохранить enrollment-код: {err}");
+                std::process::exit(1);
+            }
+            println!("Enrollment-код сохранён.");
+        }
     }
 }
 

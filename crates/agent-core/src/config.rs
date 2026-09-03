@@ -36,6 +36,27 @@ pub fn protected_device_key_path() -> PathBuf {
         .join("device-key.dpapi")
 }
 
+/// Путь к одноразовому коду, введённому на Student PC.
+pub fn pending_enrollment_code_path() -> PathBuf {
+    PathBuf::from(PROGRAM_DATA_DIR)
+        .join("state")
+        .join("pending-enrollment-code")
+}
+
+/// Путь к подписанному credential устройства.
+pub fn device_credential_path() -> PathBuf {
+    PathBuf::from(PROGRAM_DATA_DIR)
+        .join("state")
+        .join("device-credential.bin")
+}
+
+/// Путь к публичному ключу Teacher issuer.
+pub fn teacher_issuer_key_path() -> PathBuf {
+    PathBuf::from(PROGRAM_DATA_DIR)
+        .join("state")
+        .join("teacher-issuer-public-key.bin")
+}
+
 /// Каталог журналов.
 pub fn log_dir() -> PathBuf {
     PathBuf::from(PROGRAM_DATA_DIR).join("logs")

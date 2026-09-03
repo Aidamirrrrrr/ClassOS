@@ -49,6 +49,8 @@ pub struct ControlConnection<S> {
     stream: S,
 }
 
+pub type ServerControlConnection = ControlConnection<ServerTlsStream<TcpStream>>;
+
 impl<S> ControlConnection<S>
 where
     S: AsyncRead + AsyncWrite + Unpin,
