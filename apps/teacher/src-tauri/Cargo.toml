@@ -28,3 +28,4 @@ transport = { version = "0.1.0", path = "../../../crates/transport" }
 agent-core = { version = "0.1.0", path = "../../../crates/agent-core" }
 tokio = { version = "1.53.1", features = ["rt", "macros", "time", "net", "sync"] }
 protocol = { version = "0.1.0", path = "../../../crates/protocol" }
+sha2 = "0.11.0"

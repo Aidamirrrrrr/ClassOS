@@ -10,6 +10,7 @@ function App() {
   const [code, setCode] = useState<Code | null>(null);
   const [message, setMessage] = useState("Готово к работе");
   const [enrollmentCode, setEnrollmentCode] = useState("");
+  const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null);
 
   async function discover() {
     setMessage("Ищем устройства в локальной сети…");
@@ -29,6 +30,17 @@ function App() {
     catch (error) { setMessage(String(error)); }
   }
 
+  async function screenshot() {
+    if (!device) return;
+    setMessage("Запрашиваем снимок экрана…");
+    try {
+      const bytes = await invoke<number[]>("request_screenshot", { deviceId: device.device_id, displayId: 0 });
+      const blob = new Blob([new Uint8Array(bytes)], { type: "image/jpeg" });
+      setScreenshotUrl(URL.createObjectURL(blob));
+      setMessage("Снимок получен");
+    } catch (error) { setMessage(String(error)); }
+  }
+
   return <main className="container">
     <h1>ClassOS Teacher Console</h1>
     <p className="subtitle">Сетевое обнаружение и enrollment устройств (T1)</p>
@@ -42,6 +54,8 @@ function App() {
       <p>{device.ip}:{device.control_port} · {device.device_id}</p>
       <label>Enrollment-код<input value={enrollmentCode} onChange={(event) => setEnrollmentCode(event.currentTarget.value)} /></label>
       <button onClick={enroll} disabled={!enrollmentCode}>Зарегистрировать устройство</button>
+      <button onClick={screenshot}>Сделать снимок экрана</button>
+      {screenshotUrl && <img className="screenshot" src={screenshotUrl} alt="Снимок экрана устройства" />}
     </section>}
     <p className="status">{message}</p>
   </main>;

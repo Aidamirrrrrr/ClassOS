@@ -9,3 +9,4 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 label { display: block; margin: 16px 0; color: #5f6b7a; }
 input { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; padding: 10px; border: 1px solid #ccd4df; border-radius: 8px; font-size: 16px; }
 .code { font-size: 20px; } .status { margin-top: 22px; color: #334155; }
+.screenshot { display: block; width: 100%; margin-top: 18px; border-radius: 8px; background: #111827; }

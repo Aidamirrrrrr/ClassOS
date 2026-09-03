@@ -29,6 +29,7 @@ message Envelope {
     UpgradeRequired upgrade_required = 16;
     ScreenshotRequest screenshot_request = 17;
     ScreenFrame screen_frame = 18;
+    CaptureError capture_error = 19;
   }
 }
 
@@ -93,6 +94,7 @@ message UpgradeRequired {
 // Запрос единичного кадра через уже аутентифицированный T1-канал.
 message ScreenshotRequest {
   string device_id = 1;
+  uint32 display_id = 2;
 }
 
 // JPEG-кадр от Session Host через Service к Teacher Console.
@@ -104,6 +106,12 @@ message ScreenFrame {
   bytes encoded_data = 5;
   string format = 6;
   int64 captured_at_unix_ms = 7;
+}
+
+// Ошибка единичного capture без внутренних диагностических деталей.
+message CaptureError {
+  string code = 1;
+  string message = 2;
 }
 
 enum EnrollmentErrorCode {
