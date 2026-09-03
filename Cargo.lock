@@ -1053,6 +1053,7 @@ dependencies = [
  "jpeg-encoder",
  "protocol",
  "thiserror",
+ "windows",
 ]
 
 [[package]]

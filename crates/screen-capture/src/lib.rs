@@ -140,20 +140,24 @@ impl EncodedFrame {
 
 /// Точка расширения для Windows DXGI Desktop Duplication.
 /// Реализация будет добавлена после проверки Win32 API на целевом toolchain.
+#[cfg(not(windows))]
 pub struct DxgiDesktopCapture;
 
+#[cfg(not(windows))]
 impl DxgiDesktopCapture {
     pub fn new() -> Self {
         Self
     }
 }
 
+#[cfg(not(windows))]
 impl Default for DxgiDesktopCapture {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(not(windows))]
 impl ScreenCapture for DxgiDesktopCapture {
     fn displays(&self) -> Result<Vec<Display>, CaptureError> {
         Err(CaptureError::BackendUnavailable)
@@ -166,6 +170,11 @@ impl ScreenCapture for DxgiDesktopCapture {
     }
     fn stop(&mut self) {}
 }
+
+#[cfg(windows)]
+mod dxgi;
+#[cfg(windows)]
+pub use dxgi::DxgiDesktopCapture;
 
 impl JpegEncoder {
     pub fn new(quality: u8) -> Self {
