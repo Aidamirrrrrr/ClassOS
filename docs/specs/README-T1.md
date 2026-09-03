@@ -35,6 +35,9 @@ and Transport Protocol Port Number Registry IANA. Это не исключает
 - connection state machine и offline detection;
 - генерация ECDSA device identity и SHA-256 fingerprint сертификата;
 - защищённое DPAPI machine-scope хранение приватного ключа на Windows.
+- TLS/TCP listener и клиент с length-prefixed protobuf framing;
+- pinning SHA-256 fingerprint и отказ при подмене сертификата;
+- отдельный bootstrap-режим, допустимый только для enrollment.
 
 Broadcaster ещё не подключён к Windows Service: по ADR-0009 Service не должен
 рекламировать control-порт до успешного запуска TLS listener.
@@ -42,7 +45,7 @@ Broadcaster ещё не подключён к Windows Service: по ADR-0009 Ser
 ## Пока не реализовано
 
 - выпуск локального credential после проверки enrollment-кода;
-- TLS control-канал и проверка peer identity;
+- application gate и mutual authentication control-канала после enrollment;
 - heartbeat, offline detection и reconnect;
 - Teacher Console.
 

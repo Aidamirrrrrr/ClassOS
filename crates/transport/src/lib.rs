@@ -3,8 +3,11 @@
 //! Discovery остаётся недоверенным каналом: этот крейт только доставляет
 //! объявления и не принимает на их основании решений об авторизации.
 
+pub mod control;
 pub mod discovery;
 pub mod identity;
+
+pub use control::{ControlConnection, ControlError, DeviceTransport, TlsClient, TlsControlServer};
 
 pub use discovery::{
     DEFAULT_CONTROL_PORT, DEFAULT_DISCOVERY_PORT, DISCOVERY_MULTICAST_ADDR, DiscoveryConfig,

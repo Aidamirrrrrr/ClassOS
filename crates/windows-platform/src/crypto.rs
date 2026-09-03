@@ -24,7 +24,7 @@ fn transform(api: &'static str, input: &[u8], protect: bool) -> Result<Vec<u8>> 
         api,
         reason: "входной буфер DPAPI превышает u32".to_owned(),
     })?;
-    let mut input_blob = CRYPT_INTEGER_BLOB {
+    let input_blob = CRYPT_INTEGER_BLOB {
         cbData: input_len,
         pbData: input.as_ptr().cast_mut(),
     };
@@ -36,7 +36,7 @@ fn transform(api: &'static str, input: &[u8], protect: bool) -> Result<Vec<u8>> 
     let result = unsafe {
         if protect {
             CryptProtectData(
-                &mut input_blob,
+                &input_blob,
                 None,
                 None,
                 None,
@@ -45,7 +45,7 @@ fn transform(api: &'static str, input: &[u8], protect: bool) -> Result<Vec<u8>> 
                 &mut output_blob,
             )
         } else {
-            CryptUnprotectData(&mut input_blob, None, None, None, None, 0, &mut output_blob)
+            CryptUnprotectData(&input_blob, None, None, None, None, 0, &mut output_blob)
         }
     };
     result.map_err(|source| PlatformError::WindowsApi { api, source })?;
