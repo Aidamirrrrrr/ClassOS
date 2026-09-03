@@ -27,6 +27,8 @@ message Envelope {
     DeviceStatus device_status = 14;
     Heartbeat heartbeat = 15;
     UpgradeRequired upgrade_required = 16;
+    ScreenshotRequest screenshot_request = 17;
+    ScreenFrame screen_frame = 18;
   }
 }
 
@@ -86,6 +88,22 @@ message Heartbeat {
 message UpgradeRequired {
   uint32 min_protocol = 1;
   uint32 max_protocol = 2;
+}
+
+// Запрос единичного кадра через уже аутентифицированный T1-канал.
+message ScreenshotRequest {
+  string device_id = 1;
+}
+
+// JPEG-кадр от Session Host через Service к Teacher Console.
+message ScreenFrame {
+  string device_id = 1;
+  uint32 display_id = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+  bytes encoded_data = 5;
+  string format = 6;
+  int64 captured_at_unix_ms = 7;
 }
 
 enum EnrollmentErrorCode {

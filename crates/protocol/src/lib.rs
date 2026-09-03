@@ -13,6 +13,45 @@ pub const MAX_FRAME_SIZE: u32 = 64 * 1024;
 
 include!(concat!(env!("OUT_DIR"), "/classos.local.v1.rs"));
 
+#[cfg(test)]
+mod local_tests {
+    use prost::Message;
+
+    use super::{CaptureRequest, Envelope, Frame, envelope};
+
+    #[test]
+    fn capture_request_round_trip_preserves_display_id() {
+        let value = Envelope {
+            message_id: "capture-1".to_owned(),
+            payload: Some(envelope::Payload::CaptureRequest(CaptureRequest {
+                display_id: 1,
+            })),
+        };
+        assert_eq!(
+            Envelope::decode(value.encode_to_vec().as_slice()).unwrap(),
+            value
+        );
+    }
+
+    #[test]
+    fn frame_round_trip_preserves_encoded_data() {
+        let value = Envelope {
+            message_id: "frame-1".to_owned(),
+            payload: Some(envelope::Payload::Frame(Frame {
+                display_id: 0,
+                width: 8,
+                height: 4,
+                encoded_data: vec![1, 2, 3],
+                format: "jpeg".to_owned(),
+            })),
+        };
+        assert_eq!(
+            Envelope::decode(value.encode_to_vec().as_slice()).unwrap(),
+            value
+        );
+    }
+}
+
 /// Сетевой протокол между Teacher Console и Student Agent.
 pub mod network {
     /// Текущая версия сетевого протокола T1.
@@ -71,6 +110,28 @@ pub mod network {
 
             let decoded = Envelope::decode(envelope.encode_to_vec().as_slice()).unwrap();
             assert_eq!(decoded, envelope);
+        }
+
+        #[test]
+        fn screen_frame_round_trip_preserves_jpeg_payload() {
+            let envelope = Envelope {
+                protocol_version: PROTOCOL_VERSION,
+                message_id: "frame-1".to_owned(),
+                timestamp_ms: 42,
+                payload: Some(envelope::Payload::ScreenFrame(ScreenFrame {
+                    device_id: "device-1".to_owned(),
+                    display_id: 0,
+                    width: 1920,
+                    height: 1080,
+                    encoded_data: vec![0xff, 0xd8, 0xff],
+                    format: "jpeg".to_owned(),
+                    captured_at_unix_ms: 41,
+                })),
+            };
+            assert_eq!(
+                Envelope::decode(envelope.encode_to_vec().as_slice()).unwrap(),
+                envelope
+            );
         }
     }
 }

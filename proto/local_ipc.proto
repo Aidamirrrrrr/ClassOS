@@ -18,6 +18,9 @@ message Envelope {
     SessionInfo session_info = 15;
 
     Shutdown shutdown = 16;
+    CaptureRequest capture_request = 17;
+    Frame frame = 18;
+    CaptureError capture_error = 19;
   }
 }
 
@@ -62,3 +65,23 @@ message SessionInfo {
 
 // Уведомление о штатной остановке от Service к Session Host (T0 §74).
 message Shutdown {}
+
+// Запрос единичного кадра от Service к Session Host.
+message CaptureRequest {
+  uint32 display_id = 1;
+}
+
+// Закодированный кадр, возвращаемый Session Host после захвата.
+message Frame {
+  uint32 display_id = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  bytes encoded_data = 4;
+  string format = 5;
+}
+
+// Безопасная для UI ошибка захвата без диагностических деталей драйвера.
+message CaptureError {
+  string code = 1;
+  string message = 2;
+}
