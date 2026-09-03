@@ -1,0 +1,69 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  windows:
+    name: windows-latest (build + test + lint)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust stable (x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --target x86_64-pc-windows-msvc
+
+      - name: cargo build --release
+        run: cargo build --workspace --release --target x86_64-pc-windows-msvc
+
+  # Non-Windows hosts must still be able to build/test the OS-independent
+  # halves of the workspace (protocol, agent-core, and the lib halves of
+  # agent-service/agent-session). windows-platform is intentionally
+  # excluded here — it is Windows-only by design (see README-T0.md).
+  host-portable:
+    name: ubuntu-latest (host-portable subset)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy (host-portable subset)
+        run: cargo clippy --workspace --exclude windows-platform --all-targets -- -D warnings
+
+      - name: cargo test (host-portable subset)
+        run: cargo test --workspace --exclude windows-platform
