@@ -132,10 +132,21 @@ launched, and none of the SCM/WTS/session/IPC runtime behavior has been
 exercised. That gap is closed by testing on a real Windows VM/VPS (see
 "What remains before T1" below).
 
-**What requires a real Windows machine** (or the `windows-latest` CI job,
-see `.github/workflows/rust-ci.yml`): everything in "Known limitations"
-below, including the entire smoke-test checklist (spec §159) and
-Acceptance Tests A–F (spec §109-114).
+**What has actually run and been observed on real Windows**: the
+`service-smoke` job in `.github/workflows/rust-ci.yml` (`windows-latest`)
+builds a release binary, runs `install-service.ps1` for real
+(`New-Service`, ACL, SCM failure recovery config), confirms the service
+reaches and stays in `Running` with `SESSION_DISCOVERED` /
+`SESSION_HOST_STARTED` / `IPC_HANDSHAKE_OK` in `service.log`, then stops
+and uninstalls it cleanly. This caught and validated the fix for a real
+bug (see "Known limitations"). It is still not a substitute for the
+acceptance tests below — no reboot, no real interactive login, no second
+user, no multi-hour run — but it is genuine execution on real Windows,
+not just type-checking or cross-linking.
+
+**What requires a persistent real Windows machine** (VPS/VM, not CI):
+everything in "Known limitations" below, including the entire smoke-test
+checklist (spec §159) and Acceptance Tests A–F (spec §109-114).
 
 ## Build
 
@@ -240,6 +251,21 @@ Per spec §175, plus limitations specific to how this milestone was built:
 - SCM failure recovery for the *Service process itself* (Acceptance Test C,
   spec §111) is configured via `sc.exe failure` in the install script but
   has never been triggered/observed.
+- **Found and fixed via CI, not by inspection**: the first `service-smoke`
+  CI run installed and started the service successfully (confirmed
+  `SESSION_DISCOVERED`/`SESSION_HOST_STARTED`/`IPC_HANDSHAKE_OK` in
+  `service.log` on a real Windows runner), but `Stop-Service` then failed
+  after ~2s. Root cause: `graceful_shutdown` reported no intermediate SCM
+  status at all — it went straight from `Running` to `Stopped` after a
+  fixed 3s sleep, violating spec §17's requirement that all four service
+  states (including `STOP_PENDING`) be reported. Fixed by reporting
+  `StopPending` immediately on `Stop`/`Shutdown` and bumping the
+  checkpoint every second through the shutdown grace period. Re-run
+  confirmed the full install → start → stop → uninstall cycle now
+  succeeds. This is the kind of bug that `cargo check`/`cargo xwin`
+  cannot catch — only real execution can — and is a concrete argument for
+  getting a persistent Windows VPS/VM working rather than relying on CI
+  alone.
 - `windows-service`'s `define_windows_service!`/`service_control_handler`
   usage, the `SECURITY_ATTRIBUTES` lifetime handling around
   `create_with_security_attributes_raw`, and the handshake/heartbeat
