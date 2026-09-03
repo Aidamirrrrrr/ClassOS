@@ -37,6 +37,78 @@ jobs:
       - name: cargo build --release
         run: cargo build --workspace --release --target x86_64-pc-windows-msvc
 
+  service-smoke:
+    name: windows-latest (service install/start smoke test)
+    runs-on: windows-latest
+    needs: windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust stable (x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo build --release
+        run: cargo build --workspace --release --target x86_64-pc-windows-msvc
+
+      - name: Stage release binaries at target\release
+        # install-service.ps1 defaults to target\release; the msvc-target
+        # build lands in target\x86_64-pc-windows-msvc\release instead.
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path target\release | Out-Null
+          Copy-Item target\x86_64-pc-windows-msvc\release\classos-service.exe target\release\
+          Copy-Item target\x86_64-pc-windows-msvc\release\classos-session.exe target\release\
+
+      - name: Install and start ClassOSAgent service
+        shell: pwsh
+        run: .\scripts\install-service.ps1
+
+      - name: Wait for SERVICE_RUNNING and inspect state
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Start-Sleep -Seconds 5
+          $svc = Get-Service -Name ClassOSAgent
+          $svc | Format-List Name, Status, StartType
+          if ($svc.Status -ne "Running") {
+            throw "ClassOSAgent did not reach Running status (actual: $($svc.Status))"
+          }
+
+          # spec §166: no interactive console session exists in this
+          # environment, so the Session Host must NOT be launched — the
+          # supervisor should sit in NoInteractiveSession without crashing
+          # the service. This CI job intentionally cannot exercise the
+          # login/logout/reboot/ACL acceptance tests (spec §109-114) — see
+          # README-T0.md "What remains before T1".
+          Start-Sleep -Seconds 10
+          $svc = Get-Service -Name ClassOSAgent
+          if ($svc.Status -ne "Running") {
+            throw "ClassOSAgent crashed after startup (status: $($svc.Status))"
+          }
+
+          $logPath = "C:\ProgramData\ClassOS\logs\service.log"
+          if (-not (Test-Path $logPath)) {
+            throw "Expected log file not found at $logPath"
+          }
+          Get-Content $logPath -Tail 50
+
+      - name: Stop and uninstall service
+        if: always()
+        shell: pwsh
+        run: |
+          if (Get-Service -Name ClassOSAgent -ErrorAction SilentlyContinue) {
+            .\scripts\uninstall-service.ps1 -Purge
+          }
+
   # Non-Windows hosts must still be able to build/test the OS-independent
   # halves of the workspace (protocol, agent-core, and the lib halves of
   # agent-service/agent-session). windows-platform is intentionally
