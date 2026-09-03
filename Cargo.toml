@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "crates/agent-service",
+    "crates/agent-session",
+    "crates/agent-core",
+    "crates/protocol",
+    "crates/windows-platform",
+]
+
+[workspace.package]
+edition = "2024"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
