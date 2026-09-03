@@ -1,0 +1,12 @@
+[package]
+name = "transport"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+fastrand = "2.5.0"
+prost = "0.14.4"
+protocol = { version = "0.1.0", path = "../protocol" }
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["macros", "net", "rt", "time"] }
+tokio-util = { version = "0.7.19", features = ["rt"] }

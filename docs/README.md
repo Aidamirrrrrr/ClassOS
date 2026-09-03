@@ -29,11 +29,13 @@ docs/
 │       ├── 0005-local-first-control.md
 │       ├── 0006-policy-engine-abstraction.md
 │       ├── 0007-t1-local-enrollment-stub.md
-│       └── 0008-monorepo-tooling.md
+│       ├── 0008-monorepo-tooling.md
+│       └── 0009-t1-network-transport.md
 │
 └── specs/                                 ← ЧТО именно реализовать, milestone за milestone
     ├── BACKLOG.md                         статус всех milestone'ов T0–T8+
     ├── README-T0.md                       реализация и отложенная runtime-проверка T0
+    ├── README-T1.md                       текущий отчёт реализации T1
     ├── T0_SERVICE_SESSION_HOST_SPEC.md         [SPEC-READY]
     ├── T1_NETWORK_AND_DEVICE_DISCOVERY_SPEC.md [SPEC-READY]
     ├── T2_SCREEN_CAPTURE_DXGI_SPEC.md          [SPEC-READY]

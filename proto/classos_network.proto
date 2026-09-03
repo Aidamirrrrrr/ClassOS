@@ -2,6 +2,17 @@ syntax = "proto3";
 
 package classos.network.v1;
 
+// Публичное и недоверенное объявление устройства в локальной сети.
+message ClassOSDeviceAnnouncement {
+  uint32 protocol_version = 1;
+  string device_id = 2;
+  string hostname = 3;
+  string room_hint = 4;
+  string agent_version = 5;
+  string ip = 6;
+  uint32 control_port = 7;
+}
+
 // Envelope оборачивает сетевые сообщения между Teacher Console и Student Agent.
 message Envelope {
   uint32 protocol_version = 1;

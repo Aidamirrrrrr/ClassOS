@@ -958,6 +958,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "transport"
+version = "0.1.0"
+dependencies = [
+ "fastrand",
+ "prost",
+ "protocol",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"

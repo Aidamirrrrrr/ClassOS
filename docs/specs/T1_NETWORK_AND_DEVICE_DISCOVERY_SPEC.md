@@ -78,6 +78,8 @@ QUIC (допустим TLS/TCP)
 - Discovery ≠ Trust — ADR-0005 логика распространяется и сюда: обнаружение не равно авторизации (`01_TECHNICAL_ARCHITECTURE.md` §29–31).
 - Local-first — Teacher ↔ Agent работает без облака (ADR-0005).
 - Protocol — schema-first, Protocol Buffers, versioned envelope (`01_TECHNICAL_ARCHITECTURE.md` §35–39).
+- Транспорт T1 — TLS/TCP, UDP multicast discovery и отдельный крейт
+  `transport` (ADR-0009).
 
 Если T1 потребует отступить от одного из этих решений — сначала новый ADR, потом код.
 

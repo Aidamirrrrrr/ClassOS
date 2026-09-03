@@ -6,6 +6,7 @@ members = [
     "crates/agent-session",
     "crates/agent-core",
     "crates/protocol",
+    "crates/transport",
     "crates/windows-platform",
 ]
 

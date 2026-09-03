@@ -36,5 +36,6 @@ ADR фиксирует **необратимое или дорогое в раз�
 | [0006](0006-policy-engine-abstraction.md) | Product-level Policy abstraction поверх Windows enforcement | Accepted |
 | [0007](0007-t1-local-enrollment-stub.md) | T1 local enrollment stub, заменяется Cloud issuer в T8 | Accepted |
 | [0008](0008-monorepo-tooling.md) | Монорепозиторий: pnpm workspaces + Cargo workspace, без Turborepo на старте | Accepted |
+| [0009](0009-t1-network-transport.md) | Сетевой транспорт и discovery для T1 | Accepted |
 
-Следующий свободный номер: **0009**.
+Следующий свободный номер: **0010**.
