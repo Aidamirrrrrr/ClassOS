@@ -39,6 +39,7 @@ fn main() {
             rt.block_on(runtime::run(
                 windows_adapters::LaunchMode::DevChildProcess,
                 events_rx,
+                None,
             ));
         }
         Command::Service => {

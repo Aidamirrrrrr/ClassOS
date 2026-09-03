@@ -22,6 +22,10 @@ use protocol::{Envelope, LOCAL_PROTOCOL_VERSION, Ping, ServiceHello};
 use tokio::sync::mpsc;
 use tokio::time::{MissedTickBehavior, interval};
 use uuid::Uuid;
+use windows_service::service::{
+    ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
+};
+use windows_service::service_control_handler::ServiceStatusHandle;
 
 use crate::ipc::PipeConnection;
 use crate::windows_adapters::{
@@ -272,7 +276,20 @@ async fn connection_task(
 
 /// Builds the supervisor and runs the main event loop until a `Stop`/
 /// `Shutdown` `ServiceEvent` is observed or `service_events` closes.
-pub async fn run(mode: LaunchMode, mut service_events: mpsc::UnboundedReceiver<ServiceEvent>) {
+///
+/// `status_handle` is `Some` when running as a real Windows Service
+/// (spec §16-22): it lets `graceful_shutdown` report `StopPending` with
+/// incrementing checkpoints to the SCM while shutdown work is in
+/// progress (spec §17 — all four states, including `STOP_PENDING`, are
+/// mandatory; reporting only `Running` and then jumping straight to
+/// `Stopped` risks the SCM/`Stop-Service` treating the service as
+/// unresponsive). It is `None` in dev-mode `run` (spec §12-13), which has
+/// no SCM to report to.
+pub async fn run(
+    mode: LaunchMode,
+    mut service_events: mpsc::UnboundedReceiver<ServiceEvent>,
+    status_handle: Option<ServiceStatusHandle>,
+) {
     let session_host_path = match default_session_host_path() {
         Ok(path) => path,
         Err(err) => {
@@ -309,7 +326,7 @@ pub async fn run(mode: LaunchMode, mut service_events: mpsc::UnboundedReceiver<S
             maybe_event = service_events.recv() => {
                 match maybe_event {
                     Some(ServiceEvent::Stop) | Some(ServiceEvent::Shutdown) => {
-                        graceful_shutdown(&mut supervisor).await;
+                        graceful_shutdown(&mut supervisor, status_handle).await;
                         return;
                     }
                     Some(_other) => {
@@ -342,8 +359,42 @@ pub async fn run(mode: LaunchMode, mut service_events: mpsc::UnboundedReceiver<S
     }
 }
 
-async fn graceful_shutdown(supervisor: &mut Supervisor) {
+/// Interval between `StopPending` checkpoint updates while shutdown work
+/// is in progress. Must be comfortably shorter than the `wait_hint` given
+/// to each update, per Win32's service-control-manager contract: the SCM
+/// treats a service as hung only if it fails to report a fresh checkpoint
+/// within the `wait_hint` of the previous one, not within the eventual
+/// total shutdown time.
+const STOP_PENDING_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(1);
+
+fn report_stop_pending(status_handle: Option<ServiceStatusHandle>, checkpoint: u32) {
+    let Some(status_handle) = status_handle else {
+        return;
+    };
+    let _ = status_handle.set_service_status(ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::StopPending,
+        controls_accepted: ServiceControlAccept::empty(),
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint,
+        wait_hint: STOP_PENDING_CHECKPOINT_INTERVAL * 3,
+        process_id: None,
+    });
+}
+
+async fn graceful_shutdown(
+    supervisor: &mut Supervisor,
+    status_handle: Option<ServiceStatusHandle>,
+) {
     tracing::info!(event = "SERVICE_STOPPING");
+
+    // Report StopPending immediately (spec §17: START_PENDING/RUNNING/
+    // STOP_PENDING/STOPPED are all mandatory) so the SCM — and tools like
+    // `Stop-Service` built on top of it — see a state transition right
+    // away instead of "Running" persisting until the process disappears.
+    let mut checkpoint = 1;
+    report_stop_pending(status_handle, checkpoint);
+
     // T0's SessionSupervisor doesn't expose a dedicated "shut down and
     // wait" API; reusing reconcile() with a provider that (from the real
     // WTS API's point of view) may still report an active session doesn't
@@ -354,5 +405,13 @@ async fn graceful_shutdown(supervisor: &mut Supervisor) {
     {
         let _ = supervisor.launcher().terminate(pid);
     }
-    tokio::time::sleep(SHUTDOWN_GRACE_PERIOD).await;
+
+    let mut remaining = SHUTDOWN_GRACE_PERIOD;
+    while !remaining.is_zero() {
+        let step = remaining.min(STOP_PENDING_CHECKPOINT_INTERVAL);
+        tokio::time::sleep(step).await;
+        remaining -= step;
+        checkpoint += 1;
+        report_stop_pending(status_handle, checkpoint);
+    }
 }

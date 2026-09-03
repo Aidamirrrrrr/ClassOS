@@ -103,6 +103,7 @@ fn run_service() -> windows_service::Result<()> {
     rt.block_on(crate::runtime::run(
         crate::windows_adapters::LaunchMode::Privileged,
         events_rx,
+        Some(status_handle),
     ));
 
     tracing::info!(event = "SERVICE_STOPPED");
