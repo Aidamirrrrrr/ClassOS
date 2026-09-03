@@ -113,7 +113,7 @@ Agent разрешает `application_id → путь` через локальн
 └───────────────────────────┘
 ```
 
-**Явно зафиксировать в README-T5.md:** этот overlay — **не security boundary**. Настоящие app restrictions — это Policy Engine (T6). Lock в T5 не мешает технически подкованному ученику завершить процесс overlay — и это допустимо для T5, потому что реальная защита придёт с T6, а T5 закрывает Veyon-parity UX, а не security guarantee.
+**Явно зафиксировать в `docs/specs/README-T5.md`:** этот overlay — **не security boundary**. Настоящие app restrictions — это Policy Engine (T6). Lock в T5 не мешает технически подкованному ученику завершить процесс overlay — и это допустимо для T5, потому что реальная защита придёт с T6, а T5 закрывает Veyon-parity UX, а не security guarantee.
 
 ---
 

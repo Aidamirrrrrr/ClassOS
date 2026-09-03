@@ -33,6 +33,7 @@ docs/
 │
 └── specs/                                 ← ЧТО именно реализовать, milestone за milestone
     ├── BACKLOG.md                         статус всех milestone'ов T0–T8+
+    ├── README-T0.md                       реализация и отложенная runtime-проверка T0
     ├── T0_SERVICE_SESSION_HOST_SPEC.md         [SPEC-READY]
     ├── T1_NETWORK_AND_DEVICE_DISCOVERY_SPEC.md [SPEC-READY]
     ├── T2_SCREEN_CAPTURE_DXGI_SPEC.md          [SPEC-READY]
@@ -44,6 +45,10 @@ docs/
     ├── T8_INSTALLER_UPDATER_CLOUD_V0_SPEC.md    [SPEC-READY]
     └── FUTURE_PHASES_OVERVIEW.md                [ROADMAP-LEVEL — не implementation-ready]
 ```
+
+Отчёт о реализации каждого начатого milestone хранится рядом со спецификацией
+под именем `specs/README-T<N>.md`. В корне репозитория milestone-отчёты не
+размещаются.
 
 ## 2. Порядок чтения
 

@@ -29,7 +29,7 @@ windows-platform
 - `architecture/01_TECHNICAL_ARCHITECTURE.md` §14 — расширенный набор крейтов: добавлены `transport`, `screen-capture`, `remote-input`, `policy-engine`, `software-manager`, `device-health`, `updater`.
 - `specs/T0_*` §8 — только 5 крейтов (`agent-service`, `agent-session`, `agent-core`, `protocol`, `windows-platform`) — сознательно урезано под scope T0.
 
-**Это не ошибка**, а естественная эволюция: T0 намеренно минимален, остальные крейты (`screen-capture` — T2, `remote-input` — T4, `policy-engine` — T6, `software-manager`/`device-health` — T7, `updater` — T8) появляются по мере соответствующих milestone'ов — я явно закрепил это в спеках `T2_*`/`T4_*`/`T6_*`/`T7_*`/`T8_*`. Единственное, что стоит сделать при реализации T1 — явно решить, появляется ли `transport` как отдельный крейт уже в T1 (архитектурный RFC вводит его в контексте Teacher↔Agent), и зафиксировать в `README-T1.md`.
+**Это не ошибка**, а естественная эволюция: T0 намеренно минимален, остальные крейты (`screen-capture` — T2, `remote-input` — T4, `policy-engine` — T6, `software-manager`/`device-health` — T7, `updater` — T8) появляются по мере соответствующих milestone'ов — я явно закрепил это в спеках `T2_*`/`T4_*`/`T6_*`/`T7_*`/`T8_*`. Единственное, что стоит сделать при реализации T1 — явно решить, появляется ли `transport` как отдельный крейт уже в T1 (архитектурный RFC вводит его в контексте Teacher↔Agent), и зафиксировать в `docs/specs/README-T1.md`.
 
 ## 4. `prost-build` отсутствует в `[workspace.dependencies]`
 

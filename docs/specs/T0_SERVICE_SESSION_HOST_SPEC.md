@@ -3666,7 +3666,7 @@ scripts/uninstall-service.ps1
 Codex должен добавить:
 
 ```text
-README-T0.md
+docs/specs/README-T0.md
 ```
 
 с:
@@ -4016,7 +4016,7 @@ Keep raw Win32 `unsafe` code inside `windows-platform`.
 At the end, produce:
 
 ```text
-README-T0.md
+docs/specs/README-T0.md
 ```
 
 containing:
