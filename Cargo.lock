@@ -1051,6 +1051,7 @@ version = "0.1.0"
 dependencies = [
  "jpeg-decoder",
  "jpeg-encoder",
+ "protocol",
  "thiserror",
 ]
 

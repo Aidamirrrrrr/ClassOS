@@ -38,6 +38,8 @@ pub enum CaptureError {
     InvalidBuffer,
     #[error("ошибка JPEG-кодирования: {0}")]
     Encode(String),
+    #[error("DXGI Desktop Duplication недоступен в текущем Session Host")]
+    BackendUnavailable,
 }
 
 pub trait ScreenCapture {
@@ -115,6 +117,54 @@ impl ScreenCapture for MockCapture {
 
 pub struct JpegEncoder {
     quality: u8,
+}
+
+impl EncodedFrame {
+    /// Преобразует кадр в сетевое сообщение, не создавая временный файл.
+    pub fn into_network(
+        self,
+        device_id: String,
+        captured_at_unix_ms: i64,
+    ) -> protocol::network::ScreenFrame {
+        protocol::network::ScreenFrame {
+            device_id,
+            display_id: self.display_id,
+            width: self.width,
+            height: self.height,
+            encoded_data: self.data,
+            format: self.format.to_owned(),
+            captured_at_unix_ms,
+        }
+    }
+}
+
+/// Точка расширения для Windows DXGI Desktop Duplication.
+/// Реализация будет добавлена после проверки Win32 API на целевом toolchain.
+pub struct DxgiDesktopCapture;
+
+impl DxgiDesktopCapture {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for DxgiDesktopCapture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ScreenCapture for DxgiDesktopCapture {
+    fn displays(&self) -> Result<Vec<Display>, CaptureError> {
+        Err(CaptureError::BackendUnavailable)
+    }
+    fn start(&mut self, _display_id: u32) -> Result<(), CaptureError> {
+        Err(CaptureError::BackendUnavailable)
+    }
+    fn next_frame(&mut self) -> Result<RawFrame, CaptureError> {
+        Err(CaptureError::BackendUnavailable)
+    }
+    fn stop(&mut self) {}
 }
 
 impl JpegEncoder {

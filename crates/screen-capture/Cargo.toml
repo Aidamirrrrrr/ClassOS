@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 jpeg-encoder = "0.7.1"
+protocol = { version = "0.1.0", path = "../protocol" }
 thiserror = "2.0.20"
 
 [dev-dependencies]
