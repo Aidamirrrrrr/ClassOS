@@ -1,8 +1,6 @@
-//! Windows Service Control Manager integration (spec §16-22). The SCM
-//! callback must be fast and must never block, launch processes, or do
-//! network/IPC work directly (spec §20) — it only forwards
-//! `agent_core::supervisor::ServiceEvent`s into an unbounded channel that
-//! the Tokio runtime consumes.
+//! Интеграция с Windows Service Control Manager (спека §16-22). Callback
+//! SCM не блокируется и не запускает процессы или IPC: он только передаёт
+//! `ServiceEvent` в канал Tokio runtime.
 
 use std::ffi::OsString;
 use std::time::Duration;
@@ -19,9 +17,8 @@ pub const SERVICE_NAME: &str = "ClassOSAgent";
 
 define_windows_service!(ffi_service_main, service_main_entry);
 
-/// Entry point invoked by `windows-service`'s dispatcher on the SCM's
-/// service thread. Registers the control handler, forwards events, and
-/// blocks running the Tokio runtime for the lifetime of the service.
+/// Точка входа, которую dispatcher `windows-service` вызывает в потоке SCM.
+/// Регистрирует обработчик и запускает Tokio runtime на всё время службы.
 fn service_main_entry(_arguments: Vec<OsString>) {
     if let Err(err) = run_service() {
         tracing::error!(error = %err, "service run failed");
@@ -82,7 +79,7 @@ fn run_service() -> windows_service::Result<()> {
 
     tracing::info!(event = "SERVICE_RUNNING");
 
-    // Run the Tokio runtime on this thread, blocking until shutdown.
+    // Запускаем Tokio runtime в этом потоке до остановки службы.
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(err) => {
@@ -120,9 +117,8 @@ fn run_service() -> windows_service::Result<()> {
     Ok(())
 }
 
-/// Starts the SCM dispatcher. Blocks the calling thread until the service
-/// stops. Must be called from `classos-service.exe service` (invoked by
-/// the SCM, not interactively).
+/// Запускает dispatcher SCM и блокирует поток до остановки службы. Функцию
+/// вызывает SCM через `classos-service.exe service`, не пользователь.
 pub fn start_dispatcher() -> windows_service::Result<()> {
     service_dispatcher::start(SERVICE_NAME, ffi_service_main)
 }

@@ -1,7 +1,5 @@
-//! `agent-service` library half: host-portable pieces (CLI parsing) live
-//! here so they're testable without Windows. The privileged runtime
-//! (service.rs, runtime.rs, windows_adapters.rs) is Windows-only and lives
-//! directly in the `#[cfg(windows)]` binary (`src/main.rs` and its
-//! submodules), per the split described in README-T0.md.
+//! Переносимая библиотечная часть `agent-service`. Здесь находится разбор
+//! CLI, который можно тестировать без Windows. Привилегированный runtime
+//! расположен в Windows-модулях бинарника согласно README-T0.md.
 
 pub mod cli;

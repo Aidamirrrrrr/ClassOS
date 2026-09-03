@@ -60,8 +60,8 @@ jobs:
         run: cargo build --workspace --release --target x86_64-pc-windows-msvc
 
       - name: Stage release binaries at target\release
-        # install-service.ps1 defaults to target\release; the msvc-target
-        # build lands in target\x86_64-pc-windows-msvc\release instead.
+        # Скрипт установки ожидает target\release, а target MSVC использует
+        # отдельный вложенный каталог.
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path target\release | Out-Null
@@ -83,23 +83,22 @@ jobs:
             throw "ClassOSAgent did not reach Running status (actual: $($svc.Status))"
           }
 
-          # spec §166: no interactive console session exists in this
-          # environment, so the Session Host must NOT be launched — the
-          # supervisor should sit in NoInteractiveSession without crashing
-          # the service. This CI job intentionally cannot exercise the
-          # login/logout/reboot/ACL acceptance tests (spec §109-114) — see
-          # README-T0.md "What remains before T1".
+          # В runner нет интерактивной console session. Supervisor должен
+          # оставаться в NoInteractiveSession и не завершать Service.
+          # Login/logout/reboot/ACL проверяются только на постоянной VM.
           Start-Sleep -Seconds 10
           $svc = Get-Service -Name ClassOSAgent
           if ($svc.Status -ne "Running") {
             throw "ClassOSAgent crashed after startup (status: $($svc.Status))"
           }
 
-          $logPath = "C:\ProgramData\ClassOS\logs\service.log"
-          if (-not (Test-Path $logPath)) {
-            throw "Expected log file not found at $logPath"
+          $logPath = Get-ChildItem "C:\ProgramData\ClassOS\logs" -Filter "service.log*" -File |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $logPath) {
+            throw "Expected service log file was not found"
           }
-          Get-Content $logPath -Tail 50
+          Get-Content $logPath.FullName -Tail 50
 
       - name: Stop and uninstall service
         if: always()
@@ -109,10 +108,8 @@ jobs:
             .\scripts\uninstall-service.ps1 -Purge
           }
 
-  # Non-Windows hosts must still be able to build/test the OS-independent
-  # halves of the workspace (protocol, agent-core, and the lib halves of
-  # agent-service/agent-session). windows-platform is intentionally
-  # excluded here — it is Windows-only by design (see README-T0.md).
+  # Независимая от ОС часть workspace должна собираться и тестироваться на
+  # Linux. windows-platform намеренно исключён.
   host-portable:
     name: ubuntu-latest (host-portable subset)
     runs-on: ubuntu-latest

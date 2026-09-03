@@ -1,9 +1,7 @@
-//! Server-side Named Pipe IPC connection (spec §41-48, §58-65). Windows-only.
+//! Серверное IPC-соединение Named Pipe (спека §41-48, §58-65), только Windows.
 //!
-//! Each Session Host launch gets its own uniquely-named pipe (spec §41-42),
-//! so the natural shape here is "create one pipe, wait for exactly one
-//! connection, then run the handshake/heartbeat protocol on it" rather than
-//! a long-lived `accept()` loop serving many connections on one name.
+//! Для каждого запуска Session Host создаётся канал с уникальным именем.
+//! Он принимает ровно одно соединение и обслуживает его handshake/heartbeat.
 
 use std::ffi::c_void;
 use std::os::windows::io::AsRawHandle;
@@ -22,8 +20,7 @@ fn platform_err(reason: impl std::fmt::Display) -> AgentError {
     }
 }
 
-/// A single, already-authenticated (at the OS level) server-side IPC
-/// connection to one Session Host.
+/// Одно серверное IPC-соединение с Session Host, проверенное на уровне ОС.
 pub struct PipeConnection {
     reader: FramedReader<ReadHalf<NamedPipeServer>>,
     writer: FramedWriter<WriteHalf<NamedPipeServer>>,
@@ -32,28 +29,20 @@ pub struct PipeConnection {
 }
 
 impl PipeConnection {
-    /// Creates a new Named Pipe server instance named `pipe_name`, ACL'd to
-    /// `user_sid` + SYSTEM only (spec §44-48), and waits for exactly one
-    /// client to connect. On connection, independently resolves the
-    /// client's PID and session id via Windows APIs rather than trusting
-    /// anything the client will claim in `SessionHello` (spec §59-60,
-    /// §132).
+    /// Создаёт Named Pipe `pipe_name` с доступом только для `user_sid` и
+    /// SYSTEM и ожидает одного клиента. PID и session id проверяются через
+    /// WinAPI независимо от данных `SessionHello`.
     pub async fn accept_one(pipe_name: &str, user_sid: &str) -> Result<Self> {
-        // Scoped so `descriptor`/`security_attributes` (neither of which
-        // is `Send`, being raw-pointer-backed) are fully dropped before the
-        // `.connect().await` below, keeping this function's future `Send`
-        // (required by `tokio::spawn` in runtime.rs).
+        // Ограничиваем время жизни объектов с raw-указателями до await,
+        // чтобы future оставался `Send` для `tokio::spawn`.
         let server = {
             let descriptor =
                 PipeSecurityDescriptor::for_session_user(user_sid).map_err(platform_err)?;
             let mut security_attributes = descriptor.as_security_attributes();
 
-            // SAFETY: `security_attributes` is a valid, live
-            // SECURITY_ATTRIBUTES referencing `descriptor`'s memory for the
-            // duration of this call; Windows copies the security
-            // descriptor into the kernel pipe object during
-            // CreateNamedPipeW, so `descriptor` need not outlive the call
-            // itself.
+            // SAFETY: `security_attributes` действителен во время вызова и
+            // ссылается на живой `descriptor`. Windows копирует descriptor
+            // в объект ядра внутри CreateNamedPipeW.
             unsafe {
                 ServerOptions::new()
                     .pipe_mode(PipeMode::Message)
@@ -71,8 +60,8 @@ impl PipeConnection {
         server.connect().await.map_err(platform_err)?;
 
         let raw_handle = server.as_raw_handle();
-        // SAFETY: `raw_handle` is the just-connected pipe server's own
-        // handle, valid for the duration of this call.
+        // SAFETY: `raw_handle` принадлежит подключённому серверу и
+        // действителен на время вызова.
         let peer_pid = unsafe { windows_platform::pipes::client_process_id(HANDLE(raw_handle)) }
             .map_err(platform_err)?;
         let peer_session_id =

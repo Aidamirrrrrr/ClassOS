@@ -1,7 +1,5 @@
-//! `classos-session` binary entry point. Real logic only exists on
-//! Windows; on other hosts this prints a message and exits so that
-//! `cargo build`/`cargo run` still succeed on non-Windows development
-//! machines.
+//! Точка входа бинарника `classos-session`. Рабочая реализация существует
+//! только для Windows; заглушка для других ОС сохраняет переносимость сборки.
 
 #[cfg(windows)]
 mod ipc_client;
@@ -15,12 +13,37 @@ fn main() {
 
     let cli = Cli::parse();
 
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .try_init();
+    let log_dir = agent_core::config::log_dir();
+    let _ = std::fs::create_dir_all(&log_dir);
+    let appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix(format!("session-{}.log", cli.session_id))
+        .max_log_files(7)
+        .build(&log_dir);
+    let _logging_guard = match appender {
+        Ok(appender) => {
+            let (writer, guard) = tracing_appender::non_blocking(appender);
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                )
+                .with_writer(writer)
+                .with_ansi(false)
+                .try_init();
+            Some(guard)
+        }
+        Err(err) => {
+            eprintln!("failed to initialize session logging: {err}");
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                )
+                .try_init();
+            None
+        }
+    };
 
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,

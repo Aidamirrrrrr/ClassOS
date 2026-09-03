@@ -1,24 +1,18 @@
-//! The Tokio async runtime tying together `SessionSupervisor` (spec
-//! §66-71), the real Win32-backed trait implementations, and per-Session
-//! Host IPC connections (handshake + heartbeat, spec §58-65). Windows-only.
+//! Tokio runtime связывает `SessionSupervisor`, реализации поверх Win32 и
+//! отдельные IPC-соединения Session Host. Только Windows.
 //!
-//! Concurrency shape: a single event loop owns the `SessionSupervisor` and
-//! reacts to three input streams merged via `tokio::select!` — a 10s
-//! reconcile tick (spec §68, safety net), forwarded `ServiceEvent`s from
-//! the SCM control handler (or an empty stream in dev mode), and
-//! `ConnectionEvent`s reported by per-connection tasks spawned for each
-//! `SessionHostStarted` supervisor event. Each connection task owns exactly
-//! one Named Pipe connection end-to-end (accept -> handshake -> heartbeat
-//! loop) and reports back only `Ready`/`Lost`, keeping the main loop free
-//! of manual `Option<JoinHandle>` bookkeeping.
+//! Один event loop владеет supervisor и через `tokio::select!` принимает
+//! периодический reconcile, события SCM и события соединений. Каждая задача
+//! соединения целиком владеет одним Named Pipe и сообщает только Ready/Lost.
 
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use agent_core::domain::ProcessSpec;
 use agent_core::supervisor::{ServiceEvent, SessionSupervisor, SupervisorEvent};
 use agent_core::traits::SessionProcessLauncher;
 use protocol::envelope::Payload;
-use protocol::{Envelope, LOCAL_PROTOCOL_VERSION, Ping, ServiceHello};
+use protocol::{Envelope, GetSessionInfo, LOCAL_PROTOCOL_VERSION, Ping, ServiceHello, Shutdown};
 use tokio::sync::mpsc;
 use tokio::time::{MissedTickBehavior, interval};
 use uuid::Uuid;
@@ -43,6 +37,11 @@ type Supervisor = SessionSupervisor<WindowsSessionProvider, WindowsProcessLaunch
 enum ConnectionEvent {
     Ready { session_id: u32, pid: u32 },
     Lost { pid: u32 },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ConnectionCommand {
+    Shutdown,
 }
 
 fn new_message_id() -> String {
@@ -96,12 +95,13 @@ fn log_supervisor_event(event: &SupervisorEvent) {
     }
 }
 
-/// Runs one supervisor reconciliation pass, logs the resulting events, and
-/// spawns a connection task for any freshly-started Session Host.
+/// Выполняет один reconcile, журналирует события и создаёт задачу IPC для
+/// нового Session Host.
 fn do_reconcile(
     supervisor: &mut Supervisor,
     service_instance_id: &str,
     conn_tx: &mpsc::UnboundedSender<ConnectionEvent>,
+    connections: &mut HashMap<u32, mpsc::UnboundedSender<ConnectionCommand>>,
 ) {
     let events = match supervisor.reconcile(Instant::now()) {
         Ok(events) => events,
@@ -130,6 +130,8 @@ fn do_reconcile(
             };
             let conn_tx = conn_tx.clone();
             let service_instance_id = service_instance_id.to_string();
+            let (command_tx, command_rx) = mpsc::unbounded_channel();
+            connections.insert(pid, command_tx);
             tokio::spawn(connection_task(
                 pipe_name,
                 user_sid,
@@ -137,13 +139,13 @@ fn do_reconcile(
                 pid,
                 service_instance_id,
                 conn_tx,
+                command_rx,
             ));
         }
     }
 }
 
-/// Owns one Named Pipe connection end-to-end: accept, handshake, then the
-/// heartbeat loop, per spec §58-65. Reports back only `Ready`/`Lost`.
+/// Полностью обслуживает одно соединение: accept, handshake и heartbeat.
 async fn connection_task(
     pipe_name: String,
     user_sid: String,
@@ -151,7 +153,9 @@ async fn connection_task(
     pid: u32,
     service_instance_id: String,
     events_tx: mpsc::UnboundedSender<ConnectionEvent>,
+    mut commands_rx: mpsc::UnboundedReceiver<ConnectionCommand>,
 ) {
+    tracing::info!(session_id, pid, pipe_name, event = "IPC_LISTENING");
     let mut connection = match PipeConnection::accept_one(&pipe_name, &user_sid).await {
         Ok(connection) => connection,
         Err(err) => {
@@ -160,13 +164,11 @@ async fn connection_task(
             return;
         }
     };
+    tracing::info!(session_id, pid, event = "IPC_CONNECTED");
 
-    // Never trust the client's own claims about its identity: the pipe
-    // accept path already independently resolved peer_session_id/peer_pid
-    // via ProcessIdToSessionId/GetNamedPipeClientProcessId (spec §59-60,
-    // §132). Reject if either doesn't match what this launch was for —
-    // the pid check in particular guards against a stale/unrelated process
-    // somehow connecting to a freshly (re)created pipe of the same name.
+    // Не доверяем идентификаторам клиента: PID и session id уже независимо
+    // получены через WinAPI. Несовпадение означает посторонний или устаревший
+    // процесс и приводит к отказу в handshake.
     if connection.peer_session_id() != session_id || connection.peer_pid() != pid {
         tracing::warn!(
             session_id,
@@ -222,7 +224,18 @@ async fn connection_task(
     }
 
     tracing::info!(session_id, pid, event = "IPC_HANDSHAKE_OK");
+    tracing::info!(session_id, pid, event = "SESSION_HOST_CONNECTED");
     let _ = events_tx.send(ConnectionEvent::Ready { session_id, pid });
+
+    // Сразу проверяем обязательный обмен GetSessionInfo/SessionInfo.
+    let get_session_info = Envelope {
+        message_id: new_message_id(),
+        payload: Some(Payload::GetSessionInfo(GetSessionInfo {})),
+    };
+    if connection.send(&get_session_info).await.is_err() {
+        let _ = events_tx.send(ConnectionEvent::Lost { pid });
+        return;
+    }
 
     let mut ticker = interval(HEARTBEAT_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -231,6 +244,20 @@ async fn connection_task(
 
     loop {
         tokio::select! {
+            command = commands_rx.recv() => {
+                match command {
+                    Some(ConnectionCommand::Shutdown) => {
+                        let shutdown = Envelope {
+                            message_id: new_message_id(),
+                            payload: Some(Payload::Shutdown(Shutdown {})),
+                        };
+                        let _ = connection.send(&shutdown).await;
+                        tracing::info!(session_id, pid, event = "IPC_SHUTDOWN_SENT");
+                        break;
+                    }
+                    None => break,
+                }
+            }
             _ = ticker.tick() => {
                 if last_pong.elapsed() > HEARTBEAT_TIMEOUT {
                     tracing::warn!(session_id, pid, event = "IPC_HEARTBEAT_TIMEOUT");
@@ -251,12 +278,20 @@ async fn connection_task(
             recv = connection.recv() => {
                 match recv {
                     Ok(Some(envelope)) => {
-                        if matches!(envelope.payload, Some(Payload::Pong(_))) {
-                            last_pong = Instant::now();
+                        match envelope.payload {
+                            Some(Payload::Pong(_)) => last_pong = Instant::now(),
+                            Some(Payload::SessionInfo(info)) => {
+                                tracing::info!(
+                                    session_id = info.session_id,
+                                    pid = info.pid,
+                                    username = info.username,
+                                    reported_locked = info.is_locked,
+                                    event = "SESSION_INFO_RECEIVED"
+                                );
+                            }
+                            _ => tracing::warn!(session_id, pid, "received unexpected IPC message"),
                         }
-                        // Unknown/other message types are logged and
-                        // otherwise ignored (spec §127: never panic on an
-                        // unexpected message).
+                        // Неожиданные сообщения журналируются без panic.
                     }
                     Ok(None) => {
                         tracing::info!(session_id, pid, event = "SESSION_HOST_DISCONNECTED");
@@ -274,17 +309,10 @@ async fn connection_task(
     let _ = events_tx.send(ConnectionEvent::Lost { pid });
 }
 
-/// Builds the supervisor and runs the main event loop until a `Stop`/
-/// `Shutdown` `ServiceEvent` is observed or `service_events` closes.
+/// Создаёт supervisor и выполняет основной цикл до Stop или Shutdown.
 ///
-/// `status_handle` is `Some` when running as a real Windows Service
-/// (spec §16-22): it lets `graceful_shutdown` report `StopPending` with
-/// incrementing checkpoints to the SCM while shutdown work is in
-/// progress (spec §17 — all four states, including `STOP_PENDING`, are
-/// mandatory; reporting only `Running` and then jumping straight to
-/// `Stopped` risks the SCM/`Stop-Service` treating the service as
-/// unresponsive). It is `None` in dev-mode `run` (spec §12-13), which has
-/// no SCM to report to.
+/// В режиме Windows Service `status_handle` позволяет передавать SCM
+/// состояние StopPending с растущими checkpoint. В dev-режиме SCM нет.
 pub async fn run(
     mode: LaunchMode,
     mut service_events: mpsc::UnboundedReceiver<ServiceEvent>,
@@ -300,11 +328,8 @@ pub async fn run(
 
     let provider = WindowsSessionProvider;
     let launcher = WindowsProcessLauncher::new(session_host_path.clone(), mode);
-    // The ProcessSpec's own executable/args are unused by
-    // WindowsProcessLauncher (it builds --session-id/--pipe dynamically
-    // per launch, see windows_adapters.rs); it exists to satisfy
-    // SessionSupervisor's OS-independent constructor signature, which
-    // mocks in agent-core's tests use meaningfully.
+    // WindowsProcessLauncher формирует аргументы динамически. Этот spec нужен
+    // для общего независимого от ОС интерфейса и mock-тестов.
     let spec = ProcessSpec {
         executable: session_host_path,
         args: Vec::new(),
@@ -312,29 +337,46 @@ pub async fn run(
 
     let mut supervisor: Supervisor = SessionSupervisor::new(provider, launcher, spec);
     let service_instance_id = agent_core::config::new_service_instance_id().to_string();
+    match agent_core::config::load_or_create_device_id(&agent_core::config::device_id_path()) {
+        Ok(device_id) => {
+            tracing::info!(%device_id, %service_instance_id, event = "SERVICE_IDENTITY_READY")
+        }
+        Err(err) => tracing::error!(error = %err, event = "SERVICE_IDENTITY_FAILED"),
+    }
 
     let mut reconcile_tick = interval(RECONCILE_INTERVAL);
     reconcile_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let (conn_tx, mut conn_rx) = mpsc::unbounded_channel::<ConnectionEvent>();
+    let mut connections = HashMap::new();
+    let mut locked_sessions = HashSet::new();
 
     loop {
         tokio::select! {
             _ = reconcile_tick.tick() => {
-                do_reconcile(&mut supervisor, &service_instance_id, &conn_tx);
+                do_reconcile(&mut supervisor, &service_instance_id, &conn_tx, &mut connections);
             }
             maybe_event = service_events.recv() => {
                 match maybe_event {
                     Some(ServiceEvent::Stop) | Some(ServiceEvent::Shutdown) => {
-                        graceful_shutdown(&mut supervisor, status_handle).await;
+                        graceful_shutdown(&mut supervisor, &connections, status_handle).await;
                         return;
                     }
+                    Some(ServiceEvent::SessionLock(session_id)) => {
+                        locked_sessions.insert(session_id);
+                        tracing::info!(session_id, is_locked = true, event = "SESSION_LOCK_STATE_CHANGED");
+                        do_reconcile(&mut supervisor, &service_instance_id, &conn_tx, &mut connections);
+                    }
+                    Some(ServiceEvent::SessionUnlock(session_id)) => {
+                        locked_sessions.remove(&session_id);
+                        tracing::info!(session_id, is_locked = false, event = "SESSION_LOCK_STATE_CHANGED");
+                        do_reconcile(&mut supervisor, &service_instance_id, &conn_tx, &mut connections);
+                    }
                     Some(_other) => {
-                        do_reconcile(&mut supervisor, &service_instance_id, &conn_tx);
+                        do_reconcile(&mut supervisor, &service_instance_id, &conn_tx, &mut connections);
                     }
                     None => {
-                        // Event source closed (e.g. dev mode with no SCM):
-                        // keep running on the reconcile tick alone.
+                        // Без SCM продолжаем работу по reconcile timer.
                     }
                 }
             }
@@ -344,13 +386,10 @@ pub async fn run(
                         supervisor.notify_ipc_ready(session_id, pid, Instant::now());
                     }
                     Some(ConnectionEvent::Lost { pid }) => {
-                        // The next reconcile's is_alive() check will notice
-                        // an actual crash and drive backoff/restart; this
-                        // event is purely informational logging here
-                        // (spec §68-69: reconciliation, not per-event
-                        // branching, is the source of truth for lifecycle
-                        // decisions).
-                        tracing::debug!(pid, "connection task reported lost");
+                        connections.remove(&pid);
+                        for event in supervisor.notify_ipc_lost(pid, Instant::now()) {
+                            log_supervisor_event(&event);
+                        }
                     }
                     None => {}
                 }
@@ -359,12 +398,8 @@ pub async fn run(
     }
 }
 
-/// Interval between `StopPending` checkpoint updates while shutdown work
-/// is in progress. Must be comfortably shorter than the `wait_hint` given
-/// to each update, per Win32's service-control-manager contract: the SCM
-/// treats a service as hung only if it fails to report a fresh checkpoint
-/// within the `wait_hint` of the previous one, not within the eventual
-/// total shutdown time.
+/// Интервал обновления checkpoint в состоянии StopPending. Он должен быть
+/// заметно короче `wait_hint`, иначе SCM сочтёт службу зависшей.
 const STOP_PENDING_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(1);
 
 fn report_stop_pending(status_handle: Option<ServiceStatusHandle>, checkpoint: u32) {
@@ -384,26 +419,26 @@ fn report_stop_pending(status_handle: Option<ServiceStatusHandle>, checkpoint: u
 
 async fn graceful_shutdown(
     supervisor: &mut Supervisor,
+    connections: &HashMap<u32, mpsc::UnboundedSender<ConnectionCommand>>,
     status_handle: Option<ServiceStatusHandle>,
 ) {
     tracing::info!(event = "SERVICE_STOPPING");
 
-    // Report StopPending immediately (spec §17: START_PENDING/RUNNING/
-    // STOP_PENDING/STOPPED are all mandatory) so the SCM — and tools like
-    // `Stop-Service` built on top of it — see a state transition right
-    // away instead of "Running" persisting until the process disappears.
+    // Сразу сообщаем StopPending, чтобы SCM видел переход состояния и не
+    // считал службу зависшей.
     let mut checkpoint = 1;
     report_stop_pending(status_handle, checkpoint);
 
-    // T0's SessionSupervisor doesn't expose a dedicated "shut down and
-    // wait" API; reusing reconcile() with a provider that (from the real
-    // WTS API's point of view) may still report an active session doesn't
-    // stop the host. Terminate directly via the launcher for whatever PID
-    // is currently tracked, then let the deadline pass.
+    // Сначала просим Session Host завершиться через протокол. После grace
+    // period принудительно завершаем только PID, которым владеет supervisor.
+    let mut managed_pid = None;
     if let agent_core::supervisor::SupervisorState::Running { pid, .. }
     | agent_core::supervisor::SupervisorState::WaitingForIpc { pid, .. } = supervisor.state()
     {
-        let _ = supervisor.launcher().terminate(pid);
+        managed_pid = Some(pid);
+        if let Some(commands) = connections.get(&pid) {
+            let _ = commands.send(ConnectionCommand::Shutdown);
+        }
     }
 
     let mut remaining = SHUTDOWN_GRACE_PERIOD;
@@ -413,5 +448,15 @@ async fn graceful_shutdown(
         remaining -= step;
         checkpoint += 1;
         report_stop_pending(status_handle, checkpoint);
+
+        if managed_pid.is_some_and(|pid| !supervisor.launcher().is_alive(pid)) {
+            managed_pid = None;
+            break;
+        }
+    }
+
+    if let Some(pid) = managed_pid {
+        tracing::warn!(pid, event = "SESSION_HOST_FORCE_TERMINATING");
+        let _ = supervisor.launcher().terminate(pid);
     }
 }

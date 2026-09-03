@@ -1,5 +1,4 @@
-//! Client-side Named Pipe IPC connection (spec §41-43, §58, §126).
-//! Windows-only.
+//! Клиентское IPC-соединение Named Pipe. Только Windows.
 
 use std::time::Duration;
 
@@ -11,20 +10,16 @@ use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(200);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A client-side connection to the Service's Named Pipe. The pipe's ACL
-/// (set up server-side, spec §44-48) is what authenticates this
-/// connection; there is no separate application-level secret (spec §40).
+/// Клиентское соединение с каналом Service. Подлинность обеспечивается ACL
+/// канала; отдельного секрета прикладного уровня нет.
 pub struct IpcClient {
     reader: FramedReader<ReadHalf<NamedPipeClient>>,
     writer: FramedWriter<WriteHalf<NamedPipeClient>>,
 }
 
 impl IpcClient {
-    /// Connects to `pipe_name`, retrying for up to `CONNECT_TIMEOUT` to
-    /// absorb the inherent race between the Service creating its pipe
-    /// server instance and this process starting up (both happen
-    /// concurrently after launch; spec §168's "startup race" guidance
-    /// applies symmetrically here).
+    /// Подключается к `pipe_name` с повторами до `CONNECT_TIMEOUT`, чтобы
+    /// корректно пережить гонку запуска Service и Session Host.
     pub async fn connect(pipe_name: &str) -> std::io::Result<Self> {
         let deadline = tokio::time::Instant::now() + CONNECT_TIMEOUT;
         loop {

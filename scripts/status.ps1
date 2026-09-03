@@ -1,15 +1,15 @@
 <#
 .SYNOPSIS
-    Shows ClassOS Agent service status and recent log tail (T0 smoke test
-    helper, spec §159).
+    Показывает состояние службы ClassOS Agent, процессы Session Host и
+    последние строки журнала для smoke test T0.
 #>
 
 $ServiceName = "ClassOSAgent"
-$LogPath = "C:\ProgramData\ClassOS\logs\service.log"
+$LogDir = "C:\ProgramData\ClassOS\logs"
 
 $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if (-not $service) {
-    Write-Host "Service '$ServiceName' is not installed."
+    Write-Host "Служба '$ServiceName' не установлена."
     exit 1
 }
 
@@ -18,18 +18,22 @@ $service | Format-List Name, DisplayName, Status, StartType
 $sessionHosts = Get-Process -Name "classos-session" -ErrorAction SilentlyContinue
 if ($sessionHosts) {
     Write-Host ""
-    Write-Host "classos-session.exe processes:"
+    Write-Host "Процессы classos-session.exe:"
     $sessionHosts | Format-Table Id, SessionId, StartTime -AutoSize
 } else {
     Write-Host ""
-    Write-Host "No classos-session.exe processes currently running."
+    Write-Host "Запущенных процессов classos-session.exe нет."
 }
 
-if (Test-Path $LogPath) {
+$LogPath = Get-ChildItem -Path $LogDir -Filter "service.log*" -File -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+
+if ($LogPath) {
     Write-Host ""
-    Write-Host "Last 40 lines of $LogPath :"
-    Get-Content -Path $LogPath -Tail 40
+    Write-Host "Последние 40 строк $LogPath :"
+    Get-Content -Path $LogPath.FullName -Tail 40
 } else {
     Write-Host ""
-    Write-Host "No log file found at $LogPath yet."
+    Write-Host "Файл журнала в $LogDir ещё не создан."
 }

@@ -1,20 +1,16 @@
-//! Physical console session discovery (spec §25-27, §165).
+//! Обнаружение физической console session (спека §25-27, §165).
 
 use windows::Win32::System::RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId};
 
 use crate::error::{PlatformError, Result};
 
-/// Sentinel value returned by `WTSGetActiveConsoleSessionId` when there is
-/// currently no active console session (spec §25, §165).
+/// Значение `WTSGetActiveConsoleSessionId`, означающее отсутствие активной session.
 const NO_ACTIVE_SESSION: u32 = 0xFFFFFFFF;
 
-/// Returns the session id of the physical console session, or `None` if
-/// there is currently no interactive console session (e.g. between boot
-/// and first login, or a transient state during a session switch —
-/// spec §165-166). This is never a fatal error condition.
+/// Возвращает id физической console session либо `None`, если пользователь
+/// ещё не вошёл или session временно переключается. Это не фатальная ошибка.
 pub fn active_console_session_id() -> Option<u32> {
-    // SAFETY: WTSGetActiveConsoleSessionId takes no arguments and has no
-    // preconditions; it is always safe to call.
+    // SAFETY: функция не принимает аргументов и не имеет предусловий.
     let session_id = unsafe { WTSGetActiveConsoleSessionId() };
     if session_id == NO_ACTIVE_SESSION {
         None
@@ -23,14 +19,11 @@ pub fn active_console_session_id() -> Option<u32> {
     }
 }
 
-/// Independently resolves the Windows session id that owns process `pid`,
-/// via `ProcessIdToSessionId` — used by the IPC handshake to verify a
-/// claimed session id instead of trusting the client's `SessionHello`
-/// payload (spec §59-60, §132).
+/// Независимо определяет session id процесса через `ProcessIdToSessionId`.
+/// Используется для проверки IPC-клиента вместо доверия `SessionHello`.
 pub fn session_id_for_process(pid: u32) -> Result<u32> {
     let mut session_id: u32 = 0;
-    // SAFETY: `session_id` is an out-parameter written on success; `pid`
-    // is a plain process id value with no ownership implications.
+    // SAFETY: `session_id` — выходной параметр, а PID не передаёт владение.
     unsafe { ProcessIdToSessionId(pid, &mut session_id) }.map_err(|source| {
         PlatformError::WindowsApi {
             api: "ProcessIdToSessionId",
@@ -42,9 +35,6 @@ pub fn session_id_for_process(pid: u32) -> Result<u32> {
 
 #[cfg(test)]
 mod tests {
-    // active_console_session_id() calls into real Win32 and can only be
-    // meaningfully exercised on an actual Windows host; there is
-    // deliberately no unit test here. Behavioral coverage of "no session"
-    // vs "session present" lives in agent-core::supervisor's tests via
-    // MockSessionProvider, which this function's caller adapts to.
+    // Реальный вызов Win32 проверяется интеграционно на Windows. Поведение
+    // при наличии и отсутствии session покрыто MockSessionProvider.
 }

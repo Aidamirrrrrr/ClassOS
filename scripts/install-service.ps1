@@ -1,20 +1,14 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Installs the ClassOS Agent Windows Service (T0 spec §91-93).
+    Устанавливает Windows-службу ClassOS Agent (спека T0 §91-93).
 
 .DESCRIPTION
-    1. Verifies the script is running elevated.
-    2. Locates the release binaries (classos-service.exe, classos-session.exe).
-    3. Creates C:\Program Files\ClassOS and copies both binaries there.
-    4. Creates the ClassOSAgent service (LocalSystem, auto-start).
-    5. Starts the service.
-    6. Prints service status.
+    Проверяет права администратора, находит release-бинарники, копирует их
+    в Program Files, создаёт и запускает службу ClassOSAgent.
 
 .PARAMETER SourceDir
-    Directory containing the built release binaries. Defaults to
-    target\release relative to the repository root (two levels up from
-    this script).
+    Каталог с release-бинарниками. По умолчанию target\release в репозитории.
 
 .EXAMPLE
     cargo build --release
@@ -39,7 +33,7 @@ function Assert-Admin {
         [Security.Principal.WindowsIdentity]::GetCurrent()
     )
     if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw "This script must be run as Administrator."
+        throw "Скрипт необходимо запускать от имени администратора."
     }
 }
 
@@ -54,13 +48,13 @@ $serviceExeSrc = Join-Path $SourceDir "classos-service.exe"
 $sessionExeSrc = Join-Path $SourceDir "classos-session.exe"
 
 if (-not (Test-Path $serviceExeSrc)) {
-    throw "classos-service.exe not found at '$serviceExeSrc'. Run 'cargo build --release' first, or pass -SourceDir."
+    throw "Не найден classos-service.exe: '$serviceExeSrc'. Выполните cargo build --release или задайте -SourceDir."
 }
 if (-not (Test-Path $sessionExeSrc)) {
-    throw "classos-session.exe not found at '$sessionExeSrc'. Run 'cargo build --release' first, or pass -SourceDir."
+    throw "Не найден classos-session.exe: '$sessionExeSrc'. Выполните cargo build --release или задайте -SourceDir."
 }
 
-Write-Host "Installing ClassOS to $InstallDir ..."
+Write-Host "Установка ClassOS в $InstallDir ..."
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $DataDir "logs") | Out-Null
@@ -69,9 +63,8 @@ New-Item -ItemType Directory -Force -Path (Join-Path $DataDir "state") | Out-Nul
 Copy-Item -Force $serviceExeSrc (Join-Path $InstallDir "classos-service.exe")
 Copy-Item -Force $sessionExeSrc (Join-Path $InstallDir "classos-session.exe")
 
-# Restrict Program Files\ClassOS to Read & Execute for standard users
-# (spec §137-138): only privileged identities may modify installed
-# binaries, so a student session can never tamper with what gets launched.
+# Оставляем стандартным пользователям только чтение и запуск. Изменять
+# установленные бинарники могут лишь привилегированные учётные записи.
 $acl = Get-Acl $InstallDir
 $acl.SetAccessRuleProtection($true, $false)
 $adminRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
@@ -90,7 +83,7 @@ Set-Acl $InstallDir $acl
 
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existing) {
-    Write-Host "Service '$ServiceName' already exists; stopping and removing before reinstall..."
+    Write-Host "Служба '$ServiceName' уже существует; останавливаем и удаляем перед переустановкой..."
     if ($existing.Status -ne "Stopped") {
         Stop-Service -Name $ServiceName -Force
     }
@@ -105,7 +98,7 @@ New-Service -Name $ServiceName `
     -Description $Description `
     -StartupType Automatic | Out-Null
 
-# SCM failure recovery (spec §95): restart 5s / 15s / 60s+.
+# Восстановление SCM: перезапуск через 5, 15 и 60 секунд.
 sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
 
 Start-Service -Name $ServiceName

@@ -1,17 +1,14 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Uninstalls the ClassOS Agent Windows Service (T0 spec §94).
+    Удаляет Windows-службу ClassOS Agent (спека T0 §94).
 
 .DESCRIPTION
-    1. Stops the ClassOSAgent service if running.
-    2. Deletes the service registration.
-    3. Removes C:\Program Files\ClassOS.
-    4. By default, leaves C:\ProgramData\ClassOS (logs, device id,
-       config) in place. Pass -Purge to remove it too.
+    Останавливает службу, удаляет регистрацию и каталог программы.
+    ProgramData сохраняется, если не передан параметр -Purge.
 
 .PARAMETER Purge
-    Also delete C:\ProgramData\ClassOS (logs, device state, config).
+    Также удалить журналы, состояние устройства и конфигурацию из ProgramData.
 
 .EXAMPLE
     .\scripts\uninstall-service.ps1
@@ -34,7 +31,7 @@ function Assert-Admin {
         [Security.Principal.WindowsIdentity]::GetCurrent()
     )
     if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw "This script must be run as Administrator."
+        throw "Скрипт необходимо запускать от имени администратора."
     }
 }
 
@@ -43,25 +40,25 @@ Assert-Admin
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existing) {
     if ($existing.Status -ne "Stopped") {
-        Write-Host "Stopping service '$ServiceName'..."
+        Write-Host "Остановка службы '$ServiceName'..."
         Stop-Service -Name $ServiceName -Force
     }
-    Write-Host "Deleting service '$ServiceName'..."
+    Write-Host "Удаление службы '$ServiceName'..."
     sc.exe delete $ServiceName | Out-Null
 } else {
-    Write-Host "Service '$ServiceName' is not installed."
+    Write-Host "Служба '$ServiceName' не установлена."
 }
 
 if (Test-Path $InstallDir) {
-    Write-Host "Removing $InstallDir ..."
+    Write-Host "Удаление $InstallDir ..."
     Remove-Item -Recurse -Force $InstallDir
 }
 
 if ($Purge -and (Test-Path $DataDir)) {
-    Write-Host "Purging $DataDir ..."
+    Write-Host "Полное удаление $DataDir ..."
     Remove-Item -Recurse -Force $DataDir
 } elseif (Test-Path $DataDir) {
-    Write-Host "Leaving $DataDir in place (pass -Purge to remove logs/state/config too)."
+    Write-Host "$DataDir сохранён. Передайте -Purge для удаления журналов, состояния и конфигурации."
 }
 
-Write-Host "Uninstall complete."
+Write-Host "Удаление завершено."

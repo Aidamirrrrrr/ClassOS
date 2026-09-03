@@ -1,10 +1,7 @@
-//! Shared `AgentError` type (spec §84-86). Every fallible operation across
-//! `agent-core`, `agent-service`, and `agent-session` returns this enum (or
-//! wraps it) rather than a bare `String`.
+//! Общий тип `AgentError` для ошибок компонентов агента.
 
-/// Top-level ClassOS agent error. Windows API failures carry enough context
-/// (API name + numeric error code) to be actionable in logs without
-/// leaking sensitive data (spec §86).
+/// Ошибка верхнего уровня. Ошибки WinAPI содержат имя API и числовой код,
+/// но не раскрывают чувствительные данные.
 #[derive(thiserror::Error, Debug)]
 pub enum AgentError {
     #[error("windows API call failed: {api} (context: {context}, code: {code})")]

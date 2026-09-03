@@ -1,6 +1,4 @@
-//! Mock implementations of [`crate::traits`] for state-machine unit tests
-//! (spec §145-146). These allow `SessionSupervisor` to be exercised without
-//! any real Win32 API, LocalSystem privilege, or Windows host.
+//! Mock-реализации trait'ов для тестирования state machine без Win32.
 
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -10,9 +8,7 @@ use crate::domain::{ManagedProcess, ProcessSpec, Session};
 use crate::error::{AgentError, Result};
 use crate::traits::SessionProvider;
 
-/// A [`SessionProvider`] whose active session can be changed by tests at
-/// any point via interior mutability accessed from the same module (see
-/// `supervisor::tests`).
+/// `SessionProvider`, активную session которого тест может изменить.
 pub struct MockSessionProvider {
     active: Mutex<Option<u32>>,
 }
@@ -45,8 +41,7 @@ enum LaunchMode {
     AlwaysDeadAfterLaunch,
 }
 
-/// A [`crate::traits::SessionProcessLauncher`] that tracks "alive" PIDs in
-/// memory instead of calling into Win32.
+/// Launcher, который хранит живые PID в памяти вместо вызовов Win32.
 pub struct MockProcessLauncher {
     next_pid: AtomicU32,
     alive: Mutex<HashSet<u32>>,
@@ -69,8 +64,7 @@ impl MockProcessLauncher {
         }
     }
 
-    /// Every launched process is immediately reported dead, to exercise
-    /// crash-loop detection (spec §71).
+    /// Каждый процесс сразу считается завершённым для проверки crash-loop.
     pub fn always_dead_after_launch() -> Self {
         Self {
             mode: LaunchMode::AlwaysDeadAfterLaunch,
@@ -78,8 +72,7 @@ impl MockProcessLauncher {
         }
     }
 
-    /// Test helper: mark a previously launched PID as dead (simulated
-    /// crash).
+    /// Тестовый helper: помечает PID завершённым, имитируя crash.
     pub fn kill(&self, pid: u32) {
         self.alive.lock().expect("mock mutex poisoned").remove(&pid);
     }

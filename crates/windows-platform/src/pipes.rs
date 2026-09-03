@@ -1,10 +1,6 @@
-//! Named Pipe primitives (spec §41-48). This module only creates the raw,
-//! ACL-protected pipe server handle and resolves the connecting client's
-//! PID; the async read/write transport on top of the resulting handle is
-//! wired up by the caller (e.g. via `tokio::net::windows::named_pipe`,
-//! which `windows-platform` deliberately does not depend on, keeping this
-//! crate free of async-runtime concerns per spec §148 purity and §154 "no
-//! premature async everywhere").
+//! Примитивы Named Pipe. Модуль создаёт защищённый ACL server handle и
+//! определяет PID клиента. Асинхронный transport подключает вызывающий код,
+//! чтобы `windows-platform` не зависел от конкретного runtime.
 
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Storage::FileSystem::{
@@ -20,14 +16,10 @@ use crate::error::{PlatformError, Result};
 use crate::handles::OwnedHandle;
 use crate::security::PipeSecurityDescriptor;
 
-/// Recommended buffer sizes for the T0 IPC pipe: comfortably larger than
-/// MAX_FRAME_SIZE (64 KiB) used by `protocol::framing` so a single frame
-/// never spans multiple internal pipe buffer fills unnecessarily.
+/// Буферы IPC больше максимального frame, чтобы избежать лишнего дробления.
 const PIPE_BUFFER_SIZE: u32 = 128 * 1024;
 
-/// Builds the T0 pipe name: `\\.\pipe\classos\session-{sessionId}-{instanceId}`
-/// (spec §41), never a bare `session-{sessionId}` to avoid stale-connection
-/// collisions and spoofing convenience (spec §42).
+/// Создаёт уникальное имя канала с session id и instance id.
 pub fn pipe_name(session_id: u32, instance_id: &str) -> String {
     format!(r"\\.\pipe\classos\session-{session_id}-{instance_id}")
 }
@@ -41,12 +33,8 @@ fn to_wide_null(s: &str) -> Vec<u16> {
         .collect()
 }
 
-/// Creates a new Named Pipe server instance for `pipe_name`, protected by
-/// an explicit ACL restricting access to SYSTEM (full) and `user_sid`
-/// (read/write) — spec §44-48. Opened with `FILE_FLAG_OVERLAPPED` so the
-/// resulting handle is suitable for wrapping in an async I/O type
-/// (e.g. `tokio::net::windows::named_pipe::NamedPipeServer::from_raw_handle`)
-/// by the caller.
+/// Создаёт Named Pipe с явным ACL для SYSTEM и `user_sid`. Флаг
+/// `FILE_FLAG_OVERLAPPED` позволяет обернуть handle в async I/O.
 pub fn create_pipe_server(
     pipe_name: &str,
     user_sid: &str,
@@ -56,10 +44,8 @@ pub fn create_pipe_server(
 
     let mut wide_name = to_wide_null(pipe_name);
 
-    // SAFETY: `wide_name` is a valid NUL-terminated wide string alive for
-    // the duration of this call; `security_attributes` borrows from
-    // `descriptor`, which outlives this call and is returned to the caller
-    // alongside the handle so it is not dropped early.
+    // SAFETY: `wide_name` — живая NUL-terminated строка, а descriptor живёт
+    // дольше вызова и возвращается вместе с handle.
     let handle: HANDLE = unsafe {
         CreateNamedPipeW(
             PWSTR(wide_name.as_mut_ptr()),
@@ -80,26 +66,19 @@ pub fn create_pipe_server(
         });
     }
 
-    // SAFETY: `handle` was just returned by a successful CreateNamedPipeW
-    // call.
+    // SAFETY: handle получен успешным вызовом CreateNamedPipeW.
     let owned = unsafe { OwnedHandle::from_raw(handle) };
     Ok((owned, descriptor))
 }
 
-/// Resolves the process id of the process connected to `pipe_handle`
-/// (spec §60, preferred over trusting client-supplied PID/session values).
-/// Takes a borrowed raw `HANDLE` rather than `&OwnedHandle` so it can be
-/// used both with handles owned by this crate and with a pipe handle owned
-/// by an external async runtime wrapper (e.g. tokio's
-/// `NamedPipeServer::as_raw_handle`), which does not transfer ownership.
+/// Определяет PID процесса, подключённого к `pipe_handle`. Принимает
+/// заимствованный raw HANDLE без передачи владения.
 ///
 /// # Safety
-/// `pipe_handle` must be a valid, open Named Pipe server handle for the
-/// duration of this call.
+/// `pipe_handle` должен быть действительным открытым server handle.
 pub unsafe fn client_process_id(pipe_handle: HANDLE) -> Result<u32> {
     let mut pid: u32 = 0;
-    // SAFETY: caller guarantees `pipe_handle` is valid for this call, per
-    // this function's own safety contract.
+    // SAFETY: вызывающий гарантирует действительность handle.
     unsafe { GetNamedPipeClientProcessId(pipe_handle, &mut pid) }.map_err(|source| {
         PlatformError::WindowsApi {
             api: "GetNamedPipeClientProcessId",

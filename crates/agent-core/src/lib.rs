@@ -1,11 +1,7 @@
-//! `agent-core`: OS-independent business logic shared by `agent-service`
-//! and `agent-session` — errors, config, domain types, trait abstractions
-//! over Windows primitives, the session supervisor state machine, and
-//! mocks for testing it without real Win32 (spec §142-146).
+//! `agent-core`: независимая от ОС логика для service и session — ошибки,
+//! конфигурация, доменные типы, trait'ы, supervisor и mock-реализации.
 //!
-//! This crate must compile and its tests must pass on any host, including
-//! non-Windows development machines. It has no dependency on
-//! `windows-platform`.
+//! Крейт собирается и тестируется на любой ОС без `windows-platform`.
 
 pub mod config;
 pub mod domain;

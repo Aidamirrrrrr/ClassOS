@@ -35,7 +35,7 @@ Crates (`Cargo.toml` workspace, edition 2024):
   (`SessionSupervisor` desired-state reconciliation state machine with
   exponential backoff and crash-loop detection), and `mocks.rs`
   (`MockSessionProvider`, `MockProcessLauncher`). Fully host-portable and
-  unit-tested (16 tests) without any Win32 dependency.
+  unit-tested (17 tests) without any Win32 dependency.
 - `windows-platform` — all raw `unsafe` Win32 FFI, isolated per spec §88-90:
   `handles.rs` (`OwnedHandle`, `EnvironmentBlock` RAII wrappers),
   `sessions.rs` (`WTSGetActiveConsoleSessionId`, `ProcessIdToSessionId`),
@@ -137,7 +137,7 @@ exercised. That gap is closed by testing on a real Windows VM/VPS (see
 builds a release binary, runs `install-service.ps1` for real
 (`New-Service`, ACL, SCM failure recovery config), confirms the service
 reaches and stays in `Running` with `SESSION_DISCOVERED` /
-`SESSION_HOST_STARTED` / `IPC_HANDSHAKE_OK` in `service.log`, then stops
+`SESSION_HOST_STARTED` / `IPC_HANDSHAKE_OK` in the current daily service log, then stops
 and uninstalls it cleanly. This caught and validated the fix for a real
 bug (see "Known limitations"). It is still not a substitute for the
 acceptance tests below — no reboot, no real interactive login, no second
@@ -245,9 +245,9 @@ Per spec §175, plus limitations specific to how this milestone was built:
   of Done requires the full reboot → login → heartbeat → crash → restart →
   logout → new-user-login chain to work unattended on a real Windows 11
   machine, and none of that has been exercised.
-- Log rotation (spec §81) is not implemented — `service.log` is opened in
-  append mode and grows unbounded within a single install. A simple
-  size/daily rotation is needed before any extended real-world run.
+- Service and Session Host logs use daily rotation with seven-file
+  retention (`service.log.YYYY-MM-DD` and
+  `session-{sessionId}.log.YYYY-MM-DD`, spec §79-81).
 - SCM failure recovery for the *Service process itself* (Acceptance Test C,
   spec §111) is configured via `sc.exe failure` in the install script but
   has never been triggered/observed.
@@ -273,23 +273,17 @@ Per spec §175, plus limitations specific to how this milestone was built:
   runtime verification. Treat all of it as "should be correct by careful
   reading of the Win32/tokio/windows-service docs and Rust's borrow
   checker", not as "proven correct".
-- `GetSessionInfo`/`SessionInfo`/`Shutdown` messages are implemented on
-  both ends per the protocol schema, but the T0 `runtime.rs` service-side
-  event loop never actually sends `GetSessionInfo` or `Shutdown` to a
-  connected Session Host — only the Ping/Pong heartbeat path is exercised
-  end-to-end by the current wiring. The message types and Session Host
-  handling exist and are protocol-correct, but this particular
-  request/response round-trip and the graceful-shutdown-via-IPC flow
-  (spec §74) are unexercised. `graceful_shutdown` in `runtime.rs`
-  currently terminates the tracked process directly rather than sending a
-  `Shutdown` envelope and waiting; this is a simplification, not the
-  spec's exact described flow.
-- Session lock/unlock (`WTS_SESSION_LOCK`/`UNLOCK`) events are forwarded
-  from the SCM into `ServiceEvent`, but nothing currently consumes them to
-  update `SessionInfo.is_locked` — the Session Host always reports
-  `is_locked: false`. Spec §76-77 scope for T0 is satisfied structurally
-  (the field and the event plumbing exist) but the actual state relay is
-  not wired up.
+- After handshake the Service requests `SessionInfo`; the Session Host
+  replies with its session, PID and username. Service shutdown now sends
+  the protocol `Shutdown`, waits up to three seconds for a clean exit, and
+  only then force-terminates the exact managed PID (spec §74). These paths
+  compile for Windows but still require runtime verification on the
+  persistent acceptance-test machine.
+- Session lock/unlock (`WTS_SESSION_LOCK`/`UNLOCK`) events are consumed by
+  the Service, stored as authoritative per-session state, and logged as
+  `SESSION_LOCK_STATE_CHANGED`. The Session Host's initial `SessionInfo`
+  still reports `is_locked: false`; the Service-owned state supersedes it
+  after SCM notifications, as explicitly allowed by spec §77.
 - The install/uninstall PowerShell scripts (§91-95) have been written
   carefully against the spec but never executed against a real SCM.
 
@@ -304,11 +298,8 @@ this milestone can be marked `done` in `docs/specs/BACKLOG.md`:
    release build, and run through the full spec §159 smoke-test checklist.
 2. Run Acceptance Tests A–F (spec §109-114) and fix whatever breaks —
    given the amount of unexercised code above, expect to find real bugs.
-3. Implement log rotation (spec §81) before doing any multi-hour run.
-4. Decide (or explicitly defer with a documented reason) whether to wire
-   up the currently-unused `GetSessionInfo`/`Shutdown` request/response
-   flow and lock/unlock state relay, or leave them as protocol-complete
-   but functionally inert for T0 sign-off purposes.
-5. Only after all of the above: update `docs/specs/BACKLOG.md`'s T0 row
+3. Verify daily log rotation/retention and the newly wired
+   `GetSessionInfo`/`Shutdown`/lock-state paths during the extended run.
+4. Only after all of the above: update `docs/specs/BACKLOG.md`'s T0 row
    from `not started`/`in progress` to `done`, and only then start
    `docs/specs/T1_NETWORK_AND_DEVICE_DISCOVERY_SPEC.md`.

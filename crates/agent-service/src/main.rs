@@ -1,7 +1,6 @@
-//! `classos-service` binary entry point. Real logic only exists on
-//! Windows; on other hosts this prints a message and exits so that
-//! `cargo build`/`cargo run` still succeed on non-Windows development
-//! machines (see README-T0.md "Development on non-Windows hosts").
+//! Точка входа бинарника `classos-service`. Рабочая реализация существует
+//! только для Windows; на других ОС программа печатает сообщение и выходит,
+//! чтобы `cargo build` и `cargo run` оставались работоспособными.
 
 #[cfg(windows)]
 mod ipc;
@@ -23,10 +22,8 @@ fn main() {
         Command::Run => {
             init_dev_logging();
             let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
-            // No SCM in dev mode: drop the sender immediately so
-            // `service_events.recv()` in the runtime loop simply reports
-            // the channel closed and the loop keeps running on the
-            // reconcile tick alone (spec §12-13).
+            // В режиме разработки SCM нет. Сразу закрываем отправителя,
+            // а runtime продолжает работу по периодическому reconcile.
             drop(events_tx);
 
             let rt = match tokio::runtime::Runtime::new() {
@@ -43,7 +40,9 @@ fn main() {
             ));
         }
         Command::Service => {
-            init_service_logging();
+            // Храним guard до завершения SCM dispatcher, чтобы при остановке
+            // успели записаться все сообщения из очереди.
+            let _logging_guard = init_service_logging();
             if let Err(err) = service::start_dispatcher() {
                 tracing::error!(error = %err, "service dispatcher failed");
                 std::process::exit(1);
@@ -63,42 +62,53 @@ fn init_dev_logging() {
 }
 
 #[cfg(windows)]
-fn init_service_logging() {
-    // T0: service-mode logging still goes to a rolling file under
-    // C:\ProgramData\ClassOS\logs (spec §79-81). A full rotation policy is
-    // deferred; this opens/creates today's log file in append mode, which
-    // is sufficient to observe service behavior across a reboot without
-    // unbounded growth within a single run.
+fn init_service_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    // Храним семь ежедневных файлов: журнал не растёт бесконечно, но истории
+    // достаточно для первичной диагностики (спека §81).
     let log_dir = agent_core::config::log_dir();
     if let Err(err) = std::fs::create_dir_all(&log_dir) {
-        // Logging isn't available yet; there's nothing to log to. Fall
-        // back to stderr, which the SCM discards, but this keeps the
-        // service from panicking on a missing directory.
+        // Файловый журнал ещё недоступен. Используем stderr и не завершаем
+        // службу аварийно только из-за невозможности создать каталог.
         eprintln!(
             "failed to create log directory {}: {err}",
             log_dir.display()
         );
-        return;
+        return None;
     }
-    let log_path = log_dir.join("service.log");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path);
+    let config = match agent_core::config::AgentConfig::load() {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("failed to load agent config; using defaults: {err}");
+            agent_core::config::AgentConfig::default()
+        }
+    };
+    let appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("service.log")
+        .max_log_files(7)
+        .build(&log_dir);
 
-    match file {
-        Ok(file) => {
+    match appender {
+        Ok(appender) => {
+            let (writer, guard) = tracing_appender::non_blocking(appender);
             let _ = tracing_subscriber::fmt()
                 .with_env_filter(
-                    tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                    tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                        tracing_subscriber::EnvFilter::new(config.log_level.clone())
+                    }),
                 )
-                .with_writer(std::sync::Mutex::new(file))
+                .with_writer(writer)
                 .with_ansi(false)
                 .try_init();
+            tracing::info!(event = "SERVICE_STARTING");
+            Some(guard)
         }
         Err(err) => {
-            eprintln!("failed to open log file {}: {err}", log_path.display());
+            eprintln!(
+                "failed to initialize logging in {}: {err}",
+                log_dir.display()
+            );
+            None
         }
     }
 }

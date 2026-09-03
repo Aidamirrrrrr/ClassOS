@@ -1,16 +1,12 @@
-//! Length-prefixed protobuf framing over any `AsyncRead`/`AsyncWrite`
-//! transport (spec §49). Frame layout:
+//! Protobuf framing с префиксом длины поверх любого Async transport.
 //!
 //! ```text
-//! 4-byte little-endian u32 length
-//! + protobuf payload (length bytes)
+//! 4-байтовая little-endian длина u32
+//! + protobuf payload указанной длины
 //! ```
 //!
-//! The reader must not assume `one read == one message` (spec §99): partial
-//! reads of both the length prefix and the payload must be handled
-//! correctly. This module is transport-agnostic so it can run over a real
-//! Windows Named Pipe in production and an in-memory duplex stream in unit
-//! tests (spec §144-146).
+//! Один read не обязан содержать всё сообщение: корректно обрабатываются
+//! частичные чтения префикса и payload. Модуль не зависит от transport.
 
 use prost::Message;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -19,8 +15,7 @@ use crate::{Envelope, MAX_FRAME_SIZE, error::ProtocolError};
 
 const LENGTH_PREFIX_BYTES: usize = 4;
 
-/// Reads length-prefixed protobuf `Envelope` frames from an async byte
-/// stream.
+/// Читает protobuf Envelope с префиксом длины из async byte stream.
 pub struct FramedReader<R> {
     inner: R,
 }
@@ -33,11 +28,10 @@ where
         Self { inner }
     }
 
-    /// Reads a single frame and decodes it as an `Envelope`.
+    /// Читает один frame и декодирует его как Envelope.
     ///
-    /// Returns `Ok(None)` if the stream was closed cleanly before any bytes
-    /// of a new frame were read (EOF between messages). A partial frame
-    /// followed by EOF is reported as `ProtocolError::ConnectionClosed`.
+    /// Возвращает `Ok(None)` при EOF между сообщениями. EOF внутри frame
+    /// возвращается как `ProtocolError::ConnectionClosed`.
     pub async fn read_envelope(&mut self) -> Result<Option<Envelope>, ProtocolError> {
         let mut len_buf = [0u8; LENGTH_PREFIX_BYTES];
 
@@ -68,14 +62,13 @@ where
         Ok(Some(envelope))
     }
 
-    /// Consumes the reader, returning the inner transport.
+    /// Потребляет reader и возвращает внутренний transport.
     pub fn into_inner(self) -> R {
         self.inner
     }
 }
 
-/// Writes length-prefixed protobuf `Envelope` frames to an async byte
-/// stream.
+/// Записывает protobuf Envelope с префиксом длины в async byte stream.
 pub struct FramedWriter<W> {
     inner: W,
 }
@@ -88,7 +81,7 @@ where
         Self { inner }
     }
 
-    /// Encodes and writes a single `Envelope` frame.
+    /// Кодирует и записывает один Envelope frame.
     pub async fn write_envelope(&mut self, envelope: &Envelope) -> Result<(), ProtocolError> {
         let payload = envelope.encode_to_vec();
         let len = u32::try_from(payload.len()).map_err(|_| ProtocolError::FrameTooLarge {
@@ -109,7 +102,7 @@ where
         Ok(())
     }
 
-    /// Consumes the writer, returning the inner transport.
+    /// Потребляет writer и возвращает внутренний transport.
     pub fn into_inner(self) -> W {
         self.inner
     }
@@ -131,10 +124,8 @@ mod tests {
         }
     }
 
-    // Each DuplexStream endpoint already implements both AsyncRead and
-    // AsyncWrite; there is no need to split() it (and doing so would keep
-    // the underlying shared stream alive via the unused read/write half,
-    // defeating EOF/close tests below).
+    // DuplexStream уже реализует чтение и запись; split оставил бы вторую
+    // половину живой и сломал проверки EOF.
 
     #[tokio::test]
     async fn round_trip_single_frame() {
@@ -173,9 +164,7 @@ mod tests {
 
     #[tokio::test]
     async fn frame_too_large_is_rejected() {
-        // Craft a raw length prefix that exceeds MAX_FRAME_SIZE and feed it
-        // directly, bypassing FramedWriter (which also enforces the limit),
-        // to verify the reader independently rejects oversized frames.
+        // Передаём завышенную длину напрямую, проверяя защиту reader отдельно.
         let (mut client, server) = tokio::io::duplex(1024);
 
         let oversized_len = MAX_FRAME_SIZE + 1;
@@ -199,9 +188,7 @@ mod tests {
         let len = payload.len() as u32;
         let len_bytes = len.to_le_bytes();
 
-        // Split the write into several small chunks straddling the length
-        // prefix and payload boundary, to exercise read_exact's internal
-        // looping rather than assuming one write == one read.
+        // Делим запись вокруг границы префикса для проверки partial read.
         client.write_all(&len_bytes[..2]).await.unwrap();
         client.flush().await.unwrap();
         client.write_all(&len_bytes[2..]).await.unwrap();
@@ -234,7 +221,7 @@ mod tests {
     async fn abrupt_disconnect_mid_frame_is_connection_closed() {
         let (mut client, server) = tokio::io::duplex(1024);
 
-        // Announce a frame but never send its payload.
+        // Объявляем frame, но не отправляем payload.
         client.write_all(&16u32.to_le_bytes()).await.unwrap();
         client.write_all(&[1, 2, 3]).await.unwrap();
         client.flush().await.unwrap();
@@ -249,7 +236,7 @@ mod tests {
     async fn invalid_protobuf_payload_is_decode_error() {
         let (mut client, server) = tokio::io::duplex(1024);
 
-        // A field tag with an invalid wire type combination for Envelope.
+        // Field tag с недопустимым wire type для Envelope.
         let garbage: &[u8] = &[0xFF, 0xFF, 0xFF, 0xFF, 0x0F];
         client
             .write_all(&(garbage.len() as u32).to_le_bytes())

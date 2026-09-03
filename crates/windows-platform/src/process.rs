@@ -1,5 +1,5 @@
 //! `WTSQueryUserToken` + `CreateEnvironmentBlock` + `CreateProcessAsUserW`
-//! launch pipeline (spec §29-39).
+//! Цепочка запуска процесса через WinAPI (спека §29-39).
 
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStrExt;
@@ -17,14 +17,11 @@ use windows::core::PWSTR;
 use crate::error::{PlatformError, Result};
 use crate::handles::{EnvironmentBlock, OwnedHandle};
 
-/// Obtains the primary token of the interactively logged-on user for
-/// `session_id` (spec §29-31). Caller must run as LocalSystem with
-/// `SE_TCB_NAME` (true for a Windows Service running as LocalSystem).
+/// Получает primary token пользователя `session_id`. Вызывающий должен
+/// работать как LocalSystem с `SE_TCB_NAME`.
 pub fn query_user_token(session_id: u32) -> Result<OwnedHandle> {
     let mut token = HANDLE::default();
-    // SAFETY: `token` is an out-parameter written by WTSQueryUserToken on
-    // success; ownership of the resulting handle transfers to us and is
-    // wrapped immediately below.
+    // SAFETY: при успехе WinAPI записывает owned handle в выходной `token`.
     unsafe { WTSQueryUserToken(session_id, &mut token) }.map_err(|source| {
         PlatformError::WindowsApi {
             api: "WTSQueryUserToken",
@@ -32,17 +29,14 @@ pub fn query_user_token(session_id: u32) -> Result<OwnedHandle> {
         }
     })?;
 
-    // SAFETY: `token` was just populated by a successful WTSQueryUserToken
-    // call and is not otherwise owned.
+    // SAFETY: token получен успешным вызовом и ещё никому не принадлежит.
     Ok(unsafe { OwnedHandle::from_raw(token) })
 }
 
-/// Creates a user environment block for `user_token` (spec §32-33).
+/// Создаёт environment block пользователя.
 pub fn create_environment_block(user_token: &OwnedHandle) -> Result<EnvironmentBlock> {
     let mut env_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-    // SAFETY: `env_ptr` receives a pointer allocated by
-    // CreateEnvironmentBlock; ownership transfers to the EnvironmentBlock
-    // RAII wrapper immediately below.
+    // SAFETY: функция выделяет `env_ptr`, владение сразу принимает RAII-обёртка.
     unsafe { CreateEnvironmentBlock(&mut env_ptr, Some(user_token.raw()), false) }.map_err(
         |source| PlatformError::WindowsApi {
             api: "CreateEnvironmentBlock",
@@ -50,13 +44,11 @@ pub fn create_environment_block(user_token: &OwnedHandle) -> Result<EnvironmentB
         },
     )?;
 
-    // SAFETY: env_ptr was just populated by a successful
-    // CreateEnvironmentBlock call.
+    // SAFETY: env_ptr получен успешным вызовом CreateEnvironmentBlock.
     Ok(unsafe { EnvironmentBlock::from_raw(env_ptr) })
 }
 
-/// A process launched inside a user session, tracked by pid and an owned
-/// process handle for later liveness/termination checks (spec §73).
+/// Процесс в пользовательской session с PID и owned handle.
 pub struct LaunchedProcess {
     pub pid: u32,
     pub process_handle: OwnedHandle,
@@ -69,9 +61,7 @@ fn to_wide_null(s: &str) -> Vec<u16> {
         .collect()
 }
 
-/// Launches `executable` with `args` inside `session_id`'s interactive
-/// desktop, using the session user's own token and environment
-/// (spec §34-39). This is the only place `CreateProcessAsUserW` is called.
+/// Запускает executable в интерактивном desktop пользователя session.
 pub fn launch_in_session(
     session_id: u32,
     executable: &Path,
@@ -80,8 +70,7 @@ pub fn launch_in_session(
     let user_token = query_user_token(session_id)?;
     let env_block = create_environment_block(&user_token)?;
 
-    // Build the command line: quoted executable path followed by quoted
-    // args. No secrets are ever placed here (spec §39, §136).
+    // Формируем quoted command line без секретов.
     let mut command_line = format!("\"{}\"", executable.display());
     for arg in args {
         command_line.push(' ');
@@ -100,12 +89,8 @@ pub fn launch_in_session(
     };
     let mut process_information = PROCESS_INFORMATION::default();
 
-    // SAFETY: all pointers passed (command line, desktop string,
-    // environment block) are valid and alive for the duration of this
-    // call; lpApplicationName is None so Windows parses the executable
-    // from the (quoted) command line. On success, process_information
-    // contains newly-owned process/thread handles that we wrap or close
-    // below.
+    // SAFETY: все указатели живы на время вызова. При успехе полученные
+    // process/thread handles переходят во владение вызывающего кода.
     let result = unsafe {
         CreateProcessAsUserW(
             Some(user_token.raw()),
@@ -127,14 +112,11 @@ pub fn launch_in_session(
         source,
     })?;
 
-    // SAFETY: hThread was just returned by a successful CreateProcessAsUserW
-    // call; we only need the process handle going forward, so the thread
-    // handle is closed immediately per Microsoft's guidance to close
-    // handles that are no longer needed.
+    // SAFETY: hThread получен при успехе и больше не нужен, поэтому закрывается.
     let thread_handle = unsafe { OwnedHandle::from_raw(process_information.hThread) };
     drop(thread_handle);
 
-    // SAFETY: hProcess was just returned by the same successful call.
+    // SAFETY: hProcess получен тем же успешным вызовом.
     let process_handle = unsafe { OwnedHandle::from_raw(process_information.hProcess) };
 
     Ok(LaunchedProcess {
@@ -143,13 +125,10 @@ pub fn launch_in_session(
     })
 }
 
-/// Returns whether `process_handle` still refers to a running process, by
-/// checking its exit code (`STILL_ACTIVE` sentinel). Used by the
-/// `SessionProcessLauncher` adapter's `is_alive` implementation.
+/// Проверяет через `STILL_ACTIVE`, продолжает ли процесс работу.
 pub fn is_process_alive(process_handle: &OwnedHandle) -> Result<bool> {
     let mut exit_code: u32 = 0;
-    // SAFETY: process_handle.raw() is a valid, open process handle for the
-    // lifetime of this call.
+    // SAFETY: process handle открыт и жив на время вызова.
     unsafe { GetExitCodeProcess(process_handle.raw(), &mut exit_code) }.map_err(|source| {
         PlatformError::WindowsApi {
             api: "GetExitCodeProcess",
@@ -159,12 +138,9 @@ pub fn is_process_alive(process_handle: &OwnedHandle) -> Result<bool> {
     Ok(exit_code == STILL_ACTIVE.0 as u32)
 }
 
-/// Terminates a managed process (spec §72-74). Must only ever be called on
-/// a handle this crate itself obtained from `launch_in_session` — never
-/// targeted by process name.
+/// Завершает только процесс, handle которого получен из `launch_in_session`.
 pub fn terminate_process(process_handle: &OwnedHandle) -> Result<()> {
-    // SAFETY: process_handle.raw() is a valid, open process handle for the
-    // lifetime of this call.
+    // SAFETY: process handle открыт и жив на время вызова.
     unsafe { TerminateProcess(process_handle.raw(), 1) }.map_err(|source| {
         PlatformError::WindowsApi {
             api: "TerminateProcess",
@@ -175,11 +151,6 @@ pub fn terminate_process(process_handle: &OwnedHandle) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    // Every function here calls into real Win32 (WTSQueryUserToken,
-    // CreateEnvironmentBlock, CreateProcessAsUserW, GetExitCodeProcess,
-    // TerminateProcess) and requires LocalSystem privilege plus an active
-    // interactive session, so it is only meaningfully exercised on a real
-    // Windows integration test host, not as a host-independent unit test
-    // (spec §100-105, §146: business-logic testability lives in
-    // agent-core's SessionSupervisor + mocks instead).
+    // Эти Win32-вызовы требуют реальную Windows, LocalSystem и активную
+    // session. Бизнес-поведение отдельно проверяется через supervisor и mock.
 }

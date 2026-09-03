@@ -1,6 +1,4 @@
-//! Minimal T0 configuration (spec §119-122): a tiny TOML config file plus a
-//! persisted device identifier. Deliberately not a general config
-//! framework — T0 only needs `log_level` and a device id.
+//! Минимальная конфигурация T0: TOML с `log_level` и постоянный device id.
 
 use std::path::{Path, PathBuf};
 
@@ -9,23 +7,22 @@ use uuid::Uuid;
 
 use crate::error::{AgentError, Result};
 
-/// Root directory for all ClassOS runtime state on a Windows machine
-/// (spec §93, §119, §120).
+/// Корневой каталог runtime-состояния ClassOS в Windows.
 pub const PROGRAM_DATA_DIR: &str = r"C:\ProgramData\ClassOS";
 
-/// Path to the T0 config file (spec §119).
+/// Путь к конфигурации T0.
 pub fn config_file_path() -> PathBuf {
     PathBuf::from(PROGRAM_DATA_DIR).join("config.toml")
 }
 
-/// Path to the persisted device id (spec §120).
+/// Путь к постоянному device id.
 pub fn device_id_path() -> PathBuf {
     PathBuf::from(PROGRAM_DATA_DIR)
         .join("state")
         .join("device-id")
 }
 
-/// Log directory (spec §80).
+/// Каталог журналов.
 pub fn log_dir() -> PathBuf {
     PathBuf::from(PROGRAM_DATA_DIR).join("logs")
 }
@@ -49,9 +46,8 @@ impl Default for AgentConfig {
 }
 
 impl AgentConfig {
-    /// Loads config from `path`, falling back to defaults if the file does
-    /// not exist. A malformed file is a hard error rather than silently
-    /// ignored, so misconfiguration is visible.
+    /// Загружает конфигурацию; при отсутствии файла использует значения по
+    /// умолчанию. Ошибочный файл возвращает явную ошибку.
     pub fn load_from(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(contents) => toml::from_str(&contents).map_err(|err| AgentError::Config {
@@ -64,14 +60,13 @@ impl AgentConfig {
         }
     }
 
-    /// Loads config from the default T0 location.
+    /// Загружает конфигурацию из стандартного каталога T0.
     pub fn load() -> Result<Self> {
         Self::load_from(&config_file_path())
     }
 }
 
-/// Loads the persistent device id from `path`, creating a new random UUID
-/// v4 and persisting it if none exists yet (spec §120).
+/// Загружает постоянный device id или создаёт и сохраняет новый UUID v4.
 pub fn load_or_create_device_id(path: &Path) -> Result<Uuid> {
     match std::fs::read_to_string(path) {
         Ok(contents) => Uuid::parse_str(contents.trim()).map_err(|err| AgentError::Config {
@@ -95,13 +90,12 @@ pub fn load_or_create_device_id(path: &Path) -> Result<Uuid> {
     }
 }
 
-/// Generates a fresh, non-persistent service instance id (spec §121).
+/// Создаёт новый непостоянный service instance id.
 pub fn new_service_instance_id() -> Uuid {
     Uuid::new_v4()
 }
 
-/// Generates a fresh, non-persistent session instance id for a newly
-/// launched Session Host (spec §122).
+/// Создаёт новый непостоянный session instance id.
 pub fn new_session_instance_id() -> Uuid {
     Uuid::new_v4()
 }

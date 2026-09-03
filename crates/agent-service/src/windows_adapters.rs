@@ -1,15 +1,10 @@
-//! Win32-backed implementations of `agent_core::traits::{SessionProvider,
-//! SessionProcessLauncher}`, adapting `windows-platform`'s raw primitives
-//! to the OS-independent trait interface the `SessionSupervisor` is
-//! written against (spec §142-146). Windows-only.
+//! Реализации `SessionProvider` и `SessionProcessLauncher` поверх Win32.
+//! Адаптируют примитивы `windows-platform` к независимым от ОС trait'ам
+//! `SessionSupervisor` (спека §142-146). Только Windows.
 //!
-//! `WindowsProcessLauncher` also owns Named Pipe naming: each launch gets
-//! a fresh `session_instance_id` (spec §41-42, §122) baked into
-//! `--session-id`/`--pipe` arguments passed to the Session Host, since the
-//! `ProcessSpec` given to `SessionSupervisor::new` is fixed at
-//! construction and can't vary per launch. The runtime looks up the pipe
-//! name for a given pid via `pipe_name_for` after observing
-//! `SessionHostStarted`.
+//! `WindowsProcessLauncher` также создаёт имя Named Pipe с новым
+//! `session_instance_id` и передаёт его Session Host через аргументы.
+//! Runtime получает имя для PID через `pipe_name_for`.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -21,8 +16,7 @@ use agent_core::error::{AgentError, Result};
 use agent_core::traits::{SessionProcessLauncher, SessionProvider};
 use windows_platform::handles::OwnedHandle;
 
-/// Discovers the physical console session via `WTSGetActiveConsoleSessionId`
-/// (spec §25-27).
+/// Находит физическую console session через `WTSGetActiveConsoleSessionId`.
 pub struct WindowsSessionProvider;
 
 impl SessionProvider for WindowsSessionProvider {
@@ -32,20 +26,16 @@ impl SessionProvider for WindowsSessionProvider {
     }
 }
 
-/// Whether the Session Host is launched via the privileged
-/// `CreateProcessAsUserW` pipeline (real `service` mode, spec §14, §34-39)
-/// or as a plain child process of the current user (`run` dev mode,
-/// spec §12-13 — `WTSQueryUserToken` is not usable outside a LocalSystem
-/// caller with `SE_TCB_NAME`).
+/// Выбирает привилегированный запуск через `CreateProcessAsUserW` либо
+/// обычный дочерний процесс текущего пользователя в dev-режиме.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchMode {
     Privileged,
     DevChildProcess,
 }
 
-/// Launches Session Host processes and tracks their process handles so
-/// liveness/termination checks operate only on PIDs this launcher itself
-/// produced (spec §72-74).
+/// Запускает Session Host и хранит его handles, чтобы проверять и завершать
+/// только процессы, созданные этим launcher (спека §72-74).
 pub struct WindowsProcessLauncher {
     mode: LaunchMode,
     session_host_path: PathBuf,
@@ -65,8 +55,7 @@ impl WindowsProcessLauncher {
         }
     }
 
-    /// The Named Pipe name generated for the launch that produced `pid`,
-    /// if still tracked.
+    /// Имя Named Pipe для запуска с указанным PID, если он ещё отслеживается.
     pub fn pipe_name_for(&self, pid: u32) -> Option<String> {
         self.pipe_names
             .lock()
@@ -202,10 +191,8 @@ impl SessionProcessLauncher for WindowsProcessLauncher {
     }
 }
 
-/// Resolves the SDDL SID string of the user occupying `session_id`, for
-/// building the pipe ACL (spec §46-47). Only meaningful in `Privileged`
-/// mode; dev mode uses the current process's own identity implicitly
-/// (spec §96 — "pipe may use ACL only of the current user").
+/// Получает SDDL SID пользователя `session_id` для построения ACL канала.
+/// Используется только в привилегированном режиме.
 pub fn user_sid_for_session(session_id: u32) -> Result<String> {
     let token = windows_platform::process::query_user_token(session_id).map_err(|err| {
         tracing::warn!(session_id, error = %err, "query_user_token failed");
@@ -217,9 +204,8 @@ pub fn user_sid_for_session(session_id: u32) -> Result<String> {
     })
 }
 
-/// Locates the Session Host executable next to the currently running
-/// `classos-service.exe` (spec §137: only launched from the trusted
-/// ClassOS installation directory, never a writable temp/user directory).
+/// Находит Session Host рядом с `classos-service.exe`. Запуск разрешён
+/// только из доверенного каталога установки ClassOS.
 pub fn default_session_host_path() -> Result<PathBuf> {
     let exe = std::env::current_exe().map_err(AgentError::Io)?;
     let dir = exe.parent().ok_or_else(|| AgentError::Config {

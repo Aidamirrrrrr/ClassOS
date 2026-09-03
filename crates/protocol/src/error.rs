@@ -1,6 +1,6 @@
-//! Protocol-level errors: framing and message decoding failures.
+//! Ошибки framing и декодирования сообщений протокола.
 
-/// Errors produced while framing/deframing or decoding local IPC messages.
+/// Ошибки обработки локальных IPC-сообщений.
 #[derive(thiserror::Error, Debug)]
 pub enum ProtocolError {
     #[error("frame exceeds maximum size: {size} bytes (max {max})")]

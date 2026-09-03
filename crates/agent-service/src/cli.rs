@@ -1,6 +1,5 @@
-//! Command-line surface for `classos-service` (spec §12-15). Kept
-//! host-portable (no Windows dependency) so argument parsing is
-//! unit-testable on any host.
+//! Командный интерфейс `classos-service` (спека §12-15). Модуль не зависит
+//! от Windows, поэтому разбор аргументов тестируется на любой ОС.
 
 use clap::{Parser, Subcommand};
 
@@ -13,11 +12,9 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
-    /// Run in the foreground as a normal (non-LocalSystem) process, for
-    /// development (spec §13).
+    /// Запустить для разработки на переднем плане без LocalSystem (спека §13).
     Run,
-    /// Run under the Windows Service Control Manager as LocalSystem
-    /// (spec §14).
+    /// Запустить через Windows SCM от имени LocalSystem (спека §14).
     Service,
 }
 

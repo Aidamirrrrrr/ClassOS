@@ -1,6 +1,5 @@
-//! [`SessionSupervisor`]: the core T0 desired-state reconciliation loop
-//! (spec §23, §66-71). Written entirely against [`crate::traits`] so it is
-//! testable on any host with [`crate::mocks`], with zero Win32 dependency.
+//! [`SessionSupervisor`]: основной reconcile-цикл desired state для T0.
+//! Зависит только от trait'ов и тестируется с mock без Win32.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -9,12 +8,8 @@ use crate::domain::ProcessSpec;
 use crate::error::Result;
 use crate::traits::{SessionProcessLauncher, SessionProvider};
 
-/// Internal events a real Windows Service forwards from its SCM control
-/// handler (spec §21). The supervisor itself does not branch on these
-/// directly (desired-state model, spec §67) — they exist so the runtime
-/// can trigger an out-of-band reconcile promptly instead of waiting for the
-/// next periodic tick, and so lock/unlock state can be relayed elsewhere
-/// (e.g. into `SessionInfo`).
+/// События, которые Windows Service передаёт из обработчика SCM. Они
+/// запускают внеочередной reconcile и передают состояние lock/unlock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceEvent {
     Stop,
@@ -30,7 +25,7 @@ pub enum ServiceEvent {
     ConsoleDisconnect(u32),
 }
 
-/// Supervisor state machine states (spec §24).
+/// Состояния state machine supervisor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupervisorState {
     NoInteractiveSession,
@@ -41,9 +36,7 @@ pub enum SupervisorState {
     Backoff,
 }
 
-/// Observable outcomes of a single [`SessionSupervisor::reconcile`] call.
-/// Used for structured logging (spec §82-83) and for asserting behaviour in
-/// unit tests without inspecting private state.
+/// Наблюдаемые результаты одного reconcile для логов и unit-тестов.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SupervisorEvent {
     SessionDiscovered {
@@ -82,33 +75,26 @@ pub enum SupervisorEvent {
     },
 }
 
-/// Exponential backoff steps in seconds (spec §70): 1s, 2s, 5s, 10s, 30s,
-/// capped at 60s.
+/// Ступени exponential backoff в секундах с пределом 60 секунд.
 pub const BACKOFF_STEPS_SECS: [u64; 6] = [1, 2, 5, 10, 30, 60];
 
-/// A restart is considered "stable" (resetting backoff) after running this
-/// long without crashing (spec §70).
+/// Время стабильной работы, после которого backoff сбрасывается.
 pub const STABLE_RUN_DURATION: Duration = Duration::from_secs(60);
 
-/// Crash-loop detection window and threshold (spec §71).
+/// Окно и порог обнаружения crash-loop.
 pub const CRASH_LOOP_WINDOW: Duration = Duration::from_secs(120);
 pub const CRASH_LOOP_THRESHOLD: usize = 5;
 
-/// How long the supervisor waits in `WaitingForIpc` before treating the
-/// launch as failed (not specified verbatim in T0, chosen to match the
-/// "<10s ready" target in spec §167 with margin for slow desktop startup,
-/// spec §168).
+/// Предельное ожидание IPC с запасом на медленный запуск desktop.
 pub const WAITING_FOR_IPC_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Pure function computing the backoff delay for a given zero-based retry
-/// attempt (spec §70, §98 "backoff calculation" is a required unit test).
+/// Чистая функция расчёта задержки по номеру повторной попытки.
 pub fn backoff_delay(attempt: u32) -> Duration {
     let idx = (attempt as usize).min(BACKOFF_STEPS_SECS.len() - 1);
     Duration::from_secs(BACKOFF_STEPS_SECS[idx])
 }
 
-/// Tracks recent crash timestamps within a sliding window to detect crash
-/// loops (spec §71).
+/// Хранит недавние crash в скользящем окне.
 #[derive(Debug, Default)]
 struct CrashTracker {
     events: VecDeque<Instant>,
@@ -132,9 +118,8 @@ impl CrashTracker {
     }
 }
 
-/// The T0 session supervisor: computes desired state from
-/// [`SessionProvider`], compares to actual managed process state, and
-/// repairs drift via [`SessionProcessLauncher`] (spec §66-71).
+/// Supervisor T0 сравнивает desired state session с реальным процессом и
+/// исправляет расхождения через launcher.
 pub struct SessionSupervisor<P, L> {
     provider: P,
     launcher: L,
@@ -170,18 +155,12 @@ where
         self.state
     }
 
-    /// Read-only access to the launcher, so the IPC wiring layer can look
-    /// up launch-specific out-of-band data (e.g. the Named Pipe name
-    /// generated for a given pid) without the supervisor itself needing to
-    /// know about IPC transport concerns.
+    /// Read-only доступ к launcher для получения параметров запуска из IPC-слоя.
     pub fn launcher(&self) -> &L {
         &self.launcher
     }
 
-    /// Called by the IPC layer once handshake completes for a connection
-    /// bound to `session_id`/`pid` (independently verified — spec §59-60).
-    /// Transitions `WaitingForIpc` -> `Running` if it matches the currently
-    /// tracked launch.
+    /// После проверенного handshake переводит совпадающий запуск в Running.
     pub fn notify_ipc_ready(&mut self, session_id: u32, pid: u32, now: Instant) {
         if let SupervisorState::WaitingForIpc {
             session_id: sid,
@@ -196,14 +175,33 @@ where
         }
     }
 
-    /// Runs one reconciliation pass: determine desired state from the
-    /// session provider, compare to actual tracked state, repair drift.
-    /// Safe to call at any time, including redundantly (spec §68-69).
+    /// Помечает IPC нездоровым. Живой, но зависший Session Host завершается
+    /// и перезапускается так же, как упавший процесс.
+    pub fn notify_ipc_lost(&mut self, pid: u32, now: Instant) -> Vec<SupervisorEvent> {
+        let (session_id, managed_pid) = match self.state {
+            SupervisorState::WaitingForIpc { session_id, pid }
+            | SupervisorState::Running { session_id, pid } => (session_id, pid),
+            _ => return Vec::new(),
+        };
+        if managed_pid != pid {
+            return Vec::new();
+        }
+
+        let mut events = vec![SupervisorEvent::SessionHostStopping { session_id, pid }];
+        let _ = self.launcher.terminate(pid);
+        events.push(SupervisorEvent::SessionHostExited { session_id, pid });
+        self.running_since = None;
+        self.waiting_since = None;
+        self.enter_backoff(session_id, now, &mut events);
+        events
+    }
+
+    /// Выполняет идемпотентный reconcile desired и фактического состояния.
     pub fn reconcile(&mut self, now: Instant) -> Result<Vec<SupervisorEvent>> {
         let mut events = Vec::new();
         let desired = self.provider.active_console_session()?;
 
-        // Crash-storm-safe: never restart before backoff_until elapses.
+        // Не перезапускаем процесс до истечения backoff.
         if let Some(until) = self.backoff_until {
             if now < until {
                 return Ok(events);
@@ -232,10 +230,8 @@ where
             }
 
             (SupervisorState::Starting { .. }, desired) => {
-                // Starting is transient within a single reconcile call; if
-                // observed here it means a previous attempt did not
-                // complete synchronously. Treat as NoInteractiveSession and
-                // retry on the next pass.
+                // Starting должен быть переходным. Незавершённую попытку
+                // сбрасываем и повторяем на следующем проходе.
                 self.state = SupervisorState::NoInteractiveSession;
                 if let Some(session) = desired {
                     self.start_session_host(session.session_id, now, &mut events);
@@ -251,8 +247,7 @@ where
             }
 
             (SupervisorState::Stopping { session_id, pid }, _) => {
-                // Stopping is transient in this synchronous model; ensure
-                // termination completed and settle.
+                // Завершаем переходное состояние Stopping.
                 let _ = self.launcher.terminate(pid);
                 events.push(SupervisorEvent::SessionHostExited { session_id, pid });
                 self.state = SupervisorState::NoInteractiveSession;
@@ -278,7 +273,7 @@ where
     ) {
         match desired {
             None => {
-                // Logout: desired state is no session host at all.
+                // После logout Session Host больше не нужен.
                 events.push(SupervisorEvent::SessionHostStopping { session_id, pid });
                 let _ = self.launcher.terminate(pid);
                 events.push(SupervisorEvent::SessionHostExited { session_id, pid });
@@ -287,7 +282,7 @@ where
                 self.waiting_since = None;
             }
             Some(session) if session.session_id != session_id => {
-                // Active console session changed: replace the managed host.
+                // При смене console session заменяем управляемый host.
                 events.push(SupervisorEvent::SessionChanged {
                     old_session_id: session_id,
                     new_session_id: session.session_id,
@@ -300,7 +295,7 @@ where
                 self.start_session_host(session.session_id, now, events);
             }
             Some(_) if !self.launcher.is_alive(pid) => {
-                // Crashed.
+                // Процесс завершился аварийно.
                 events.push(SupervisorEvent::SessionHostExited { session_id, pid });
                 self.running_since = None;
                 self.waiting_since = None;
@@ -315,10 +310,10 @@ where
                     self.waiting_since = None;
                     self.enter_backoff(session_id, now, events);
                 }
-                // else: still legitimately waiting, nothing to do.
+                // Иначе продолжаем допустимое ожидание.
             }
             Some(_) => {
-                // Running and healthy: reset backoff once stable.
+                // После стабильной работы сбрасываем backoff.
                 if let Some(running_since) = self.running_since
                     && now.duration_since(running_since) >= STABLE_RUN_DURATION
                 {
@@ -465,7 +460,7 @@ mod tests {
         };
         sup.notify_ipc_ready(1, pid, now);
 
-        // Simulate crash.
+        // Имитируем crash.
         sup.kill_for_test(pid);
         let events = sup.reconcile(now + Duration::from_secs(1)).unwrap();
         assert!(matches!(sup.state(), SupervisorState::Backoff));
@@ -475,7 +470,7 @@ mod tests {
                 .any(|e| matches!(e, SupervisorEvent::SessionHostRestarting { .. }))
         );
 
-        // After backoff elapses, it should relaunch.
+        // После backoff процесс должен запуститься снова.
         let events = sup.reconcile(now + Duration::from_secs(3)).unwrap();
         assert!(matches!(sup.state(), SupervisorState::WaitingForIpc { .. }));
         assert!(
@@ -486,12 +481,32 @@ mod tests {
     }
 
     #[test]
+    fn ipc_loss_terminates_live_host_and_schedules_restart() {
+        let provider = MockSessionProvider::new(Some(1));
+        let launcher = MockProcessLauncher::new();
+        let mut sup = SessionSupervisor::new(provider, launcher, spec());
+        let now = Instant::now();
+        sup.reconcile(now).unwrap();
+        let pid = match sup.state() {
+            SupervisorState::WaitingForIpc { pid, .. } => pid,
+            other => panic!("unexpected state {other:?}"),
+        };
+        sup.notify_ipc_ready(1, pid, now);
+
+        let events = sup.notify_ipc_lost(pid, now + Duration::from_secs(1));
+
+        assert_eq!(sup.state(), SupervisorState::Backoff);
+        assert!(!sup.launcher.is_alive(pid));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, SupervisorEvent::SessionHostRestarting { .. }))
+        );
+    }
+
+    #[test]
     fn crash_loop_is_detected() {
-        // A launcher that always fails to launch also drives the
-        // crash-loop counter (spec §71 applies to repeated failed restart
-        // attempts, not only post-launch crashes): each reconcile call
-        // that hits an unexpired-backoff-cleared retry counts as one
-        // failure.
+        // Постоянная ошибка запуска тоже должна увеличивать счётчик crash-loop.
         let provider = MockSessionProvider::new(Some(1));
         let launcher = MockProcessLauncher::always_fail_launch();
         let mut sup = SessionSupervisor::new(provider, launcher, spec());
@@ -506,11 +521,8 @@ mod tests {
             {
                 saw_crash_loop = true;
             }
-            // Advance past whatever backoff was just scheduled so the next
-            // reconcile actually attempts a relaunch instead of being
-            // suppressed by an unexpired backoff window. `attempt` tracks
-            // the supervisor's internal backoff_attempt in lockstep since
-            // both start at 0 and increment once per failed attempt.
+            // Переходим за назначенный backoff, чтобы следующий reconcile
+            // действительно выполнил новую попытку.
             now += backoff_delay(attempt) + Duration::from_millis(1);
         }
         assert!(
@@ -568,9 +580,7 @@ mod tests {
         );
     }
 
-    // Test-only helpers layered onto the concrete mock-backed supervisor,
-    // to avoid growing the production API surface with test-specific
-    // methods.
+    // Тестовые helpers для mock-supervisor, не расширяющие production API.
     impl SessionSupervisor<MockSessionProvider, MockProcessLauncher> {
         fn kill_for_test(&self, pid: u32) {
             self.launcher.kill(pid);
