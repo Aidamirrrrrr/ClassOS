@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package classos.local.v1;
+
+// Envelope wraps every message exchanged over the local Service <-> Session
+// Host IPC transport (T0 §51). Framing (length prefix) is handled outside
+// this schema, see crates/protocol/src/framing.rs.
+message Envelope {
+  string message_id = 1;
+
+  oneof payload {
+    SessionHello session_hello = 10;
+    ServiceHello service_hello = 11;
+
+    Ping ping = 12;
+    Pong pong = 13;
+
+    GetSessionInfo get_session_info = 14;
+    SessionInfo session_info = 15;
+
+    Shutdown shutdown = 16;
+  }
+}
+
+// Sent by Session Host immediately after connecting to the pipe (T0 §52).
+// NOTE: the Service must never trust session_id/pid claimed here — it
+// independently verifies both via Windows APIs (T0 §59, §132).
+message SessionHello {
+  uint32 protocol_version = 1;
+  uint32 session_id = 2;
+  uint32 pid = 3;
+}
+
+// Sent by Service in response to a validated SessionHello (T0 §53).
+message ServiceHello {
+  uint32 protocol_version = 1;
+  string service_instance_id = 2;
+}
+
+// Service -> Session Host heartbeat probe (T0 §54, §62).
+message Ping {
+  uint64 sequence = 1;
+  int64 sent_at_unix_ms = 2;
+}
+
+// Session Host -> Service heartbeat reply (T0 §55).
+message Pong {
+  uint64 sequence = 1;
+}
+
+// Request for the current SessionInfo. Empty body: the referenced session
+// is implicit from the connection itself (T0 §51 oneof references this
+// message without defining a body; this is the minimal completion needed
+// to make the oneof compile).
+message GetSessionInfo {}
+
+// Reported session state (T0 §56). Deliberately excludes any product
+// domain fields (email/student/organization/device/lesson) per T0 scope.
+message SessionInfo {
+  uint32 session_id = 1;
+  uint32 pid = 2;
+
+  string username = 3;
+
+  bool is_locked = 4;
+}
+
+// Graceful shutdown notification, Service -> Session Host (T0 §74).
+message Shutdown {}
