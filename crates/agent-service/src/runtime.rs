@@ -292,6 +292,12 @@ async fn connection_task(
                                     event = "SESSION_INFO_RECEIVED"
                                 );
                             }
+                            Some(Payload::Frame(frame)) => {
+                                tracing::info!(session_id, pid, display_id = frame.display_id, width = frame.width, height = frame.height, format = frame.format, event = "CAPTURE_FRAME_RECEIVED");
+                            }
+                            Some(Payload::CaptureError(error)) => {
+                                tracing::warn!(session_id, pid, code = error.code, message = error.message, event = "CAPTURE_FAILED");
+                            }
                             _ => tracing::warn!(session_id, pid, "received unexpected IPC message"),
                         }
                         // Неожиданные сообщения журналируются без panic.

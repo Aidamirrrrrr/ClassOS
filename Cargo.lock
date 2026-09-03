@@ -45,6 +45,7 @@ dependencies = [
  "agent-core",
  "clap",
  "protocol",
+ "screen-capture",
  "thiserror",
  "tokio",
  "tracing",

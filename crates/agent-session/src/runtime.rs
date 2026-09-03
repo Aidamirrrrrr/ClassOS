@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use protocol::envelope::Payload;
-use protocol::{Envelope, LOCAL_PROTOCOL_VERSION, Pong, SessionHello, SessionInfo};
+use protocol::{CaptureError, Envelope, LOCAL_PROTOCOL_VERSION, Pong, SessionHello, SessionInfo};
 use uuid::Uuid;
 
 use crate::ipc_client::IpcClient;
@@ -93,6 +93,20 @@ pub async fn run(session_id: u32, pipe_name: &str) -> std::io::Result<()> {
                     })),
                 };
                 if client.send(&info).await.is_err() {
+                    break;
+                }
+            }
+            Some(Payload::CaptureRequest(request)) => {
+                // DXGI backend подключается следующим шагом T2. Уже сейчас
+                // отвечаем структурированной ошибкой, без бесконечного ожидания.
+                let error = Envelope {
+                    message_id: new_message_id(),
+                    payload: Some(Payload::CaptureError(CaptureError {
+                        code: "CAPTURE_BACKEND_UNAVAILABLE".to_owned(),
+                        message: format!("захват дисплея {} ещё не реализован", request.display_id),
+                    })),
+                };
+                if client.send(&error).await.is_err() {
                     break;
                 }
             }
