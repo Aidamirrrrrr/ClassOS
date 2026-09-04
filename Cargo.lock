@@ -23,6 +23,7 @@ version = "0.1.0"
 dependencies = [
  "agent-core",
  "clap",
+ "policy-engine",
  "protocol",
  "thiserror",
  "tokio",
