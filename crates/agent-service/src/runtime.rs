@@ -55,6 +55,9 @@ enum ConnectionCommand {
     RemoteStop {
         reason: String,
     },
+    RemoteInput {
+        event: protocol::RemoteInputEvent,
+    },
 }
 
 #[derive(Default)]
@@ -155,6 +158,55 @@ impl CaptureBroker {
             });
         }
     }
+
+    fn send_remote_input(
+        &self,
+        event: protocol::RemoteInputEvent,
+    ) -> Result<(), protocol::CaptureError> {
+        let sender = self
+            .current
+            .lock()
+            .expect("capture broker mutex poisoned")
+            .as_ref()
+            .map(|(_, sender)| sender.clone())
+            .ok_or_else(|| protocol::CaptureError {
+                code: "NO_INTERACTIVE_SESSION".to_owned(),
+                message: "нет активной пользовательской сессии".to_owned(),
+            })?;
+        sender
+            .send(ConnectionCommand::RemoteInput { event })
+            .map_err(|_| protocol::CaptureError {
+                code: "SESSION_HOST_DISCONNECTED".to_owned(),
+                message: "Session Host недоступен".to_owned(),
+            })
+    }
+}
+
+fn to_local_remote_input(
+    event: protocol::network::RemoteInputEvent,
+) -> Option<protocol::RemoteInputEvent> {
+    use protocol::network::remote_input_event::Event as NetworkEvent;
+    use protocol::remote_input_event::Event as LocalEvent;
+    let event = match event.event? {
+        NetworkEvent::MouseMove(value) => LocalEvent::MouseMove(protocol::MouseMove {
+            x: value.x,
+            y: value.y,
+        }),
+        NetworkEvent::MouseButton(value) => LocalEvent::MouseButton(protocol::MouseButton {
+            button: value.button,
+            is_down: value.is_down,
+            x: value.x,
+            y: value.y,
+        }),
+        NetworkEvent::MouseWheel(value) => {
+            LocalEvent::MouseWheel(protocol::MouseWheel { delta: value.delta })
+        }
+        NetworkEvent::KeyEvent(value) => LocalEvent::KeyEvent(protocol::KeyEvent {
+            virtual_key_code: value.virtual_key_code,
+            is_down: value.is_down,
+        }),
+    };
+    Some(protocol::RemoteInputEvent { event: Some(event) })
 }
 
 fn new_message_id() -> String {
@@ -404,6 +456,10 @@ async fn connection_task(
                     }
                     Some(ConnectionCommand::RemoteStop { reason }) => {
                         let request = Envelope { message_id: new_message_id(), payload: Some(Payload::RemoteControlStop(protocol::RemoteControlStop { reason })) };
+                        if connection.send(&request).await.is_err() { break; }
+                    }
+                    Some(ConnectionCommand::RemoteInput { event }) => {
+                        let request = Envelope { message_id: new_message_id(), payload: Some(Payload::RemoteInputEvent(event)) };
                         if connection.send(&request).await.is_err() { break; }
                     }
                     None => break,
@@ -723,7 +779,13 @@ async fn handle_control_connection(
             )),
         };
         connection.send(&status).await?;
-        serve_heartbeat(connection, device_id, capture_broker).await?;
+        serve_heartbeat(
+            connection,
+            device_id,
+            verified.teacher_session_id,
+            capture_broker,
+        )
+        .await?;
         return Ok(());
     }
 
@@ -777,6 +839,7 @@ async fn handle_control_connection(
 async fn serve_heartbeat(
     mut connection: transport::ServerControlConnection,
     device_id: String,
+    teacher_session_id: String,
     capture_broker: Arc<CaptureBroker>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut tick = tokio::time::interval(agent_core::network::NETWORK_HEARTBEAT_INTERVAL);
@@ -785,10 +848,14 @@ async fn serve_heartbeat(
     let mut last_seen = std::time::Instant::now();
     let mut subscription: Option<agent_core::stream::ActiveSubscription> = None;
     let mut frame_clock: Option<agent_core::stream::FrameClock> = None;
+    let mut remote_session = agent_core::remote::RemoteControlSession::default();
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                if last_seen.elapsed() > agent_core::network::NETWORK_OFFLINE_TIMEOUT { return Ok(()); }
+                if last_seen.elapsed() > agent_core::network::NETWORK_OFFLINE_TIMEOUT {
+                    if remote_session.disconnect().is_some() { capture_broker.stop_remote("teacher_disconnected"); }
+                    return Ok(());
+                }
                 if subscription.is_some_and(|value| value.is_expired(now_unix_ms())) {
                     subscription = None;
                     frame_clock = None;
@@ -899,9 +966,50 @@ async fn serve_heartbeat(
                                 payload: Some(payload),
                             }).await?;
                         }
+                        Some(protocol::network::envelope::Payload::RemoteControlStart(request)) => {
+                            let session_id = new_message_id();
+                            let payload = if request.device_id != device_id {
+                                protocol::network::envelope::Payload::RemoteControlStopped(protocol::network::RemoteControlStopped { device_id: device_id.clone(), reason: "denied".to_owned() })
+                            } else if remote_session.start(teacher_session_id.clone(), session_id.clone()).is_err() {
+                                protocol::network::envelope::Payload::RemoteControlStopped(protocol::network::RemoteControlStopped { device_id: device_id.clone(), reason: "denied".to_owned() })
+                            } else if let Err(error) = capture_broker.start_remote(session_id.clone()).await {
+                                let _ = remote_session.disconnect();
+                                tracing::warn!(code = error.code, event = "REMOTE_CONTROL_START_FAILED");
+                                protocol::network::envelope::Payload::RemoteControlStopped(protocol::network::RemoteControlStopped { device_id: device_id.clone(), reason: "error".to_owned() })
+                            } else {
+                                tracing::info!(teacher_session_id = %teacher_session_id, session_id = %session_id, action = "REMOTE_CONTROL_STARTED", result = "SUCCESS", event = "AUDIT");
+                                protocol::network::envelope::Payload::RemoteControlStarted(protocol::network::RemoteControlStarted { device_id: device_id.clone(), session_id })
+                            };
+                            connection.send(&protocol::network::Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: new_message_id(), timestamp_ms: now_unix_ms(), payload: Some(payload) }).await?;
+                        }
+                        Some(protocol::network::envelope::Payload::RemoteControlStop(request)) => {
+                            let payload = match remote_session.stop(&teacher_session_id) {
+                                Ok(session_id) if request.device_id == device_id => {
+                                    capture_broker.stop_remote("teacher_stopped");
+                                    tracing::info!(teacher_session_id = %teacher_session_id, session_id = %session_id, action = "REMOTE_CONTROL_STOPPED", result = "SUCCESS", event = "AUDIT");
+                                    protocol::network::envelope::Payload::RemoteControlStopped(protocol::network::RemoteControlStopped { device_id: device_id.clone(), reason: "teacher_stopped".to_owned() })
+                                }
+                                _ => protocol::network::envelope::Payload::RemoteControlStopped(protocol::network::RemoteControlStopped { device_id: device_id.clone(), reason: "denied".to_owned() }),
+                            };
+                            connection.send(&protocol::network::Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: new_message_id(), timestamp_ms: now_unix_ms(), payload: Some(payload) }).await?;
+                        }
+                        Some(protocol::network::envelope::Payload::RemoteInputEvent(event)) => {
+                            if event.device_id != device_id || !remote_session.accepts_input(&teacher_session_id) {
+                                tracing::warn!(event = "REMOTE_INPUT_REJECTED", reason = "not_remote_owner");
+                            } else if let Some(event) = to_local_remote_input(event) {
+                                if let Err(error) = capture_broker.send_remote_input(event) {
+                                    tracing::warn!(code = error.code, event = "REMOTE_INPUT_REJECTED");
+                                }
+                            } else {
+                                tracing::warn!(event = "REMOTE_INPUT_REJECTED", reason = "invalid_event");
+                            }
+                        }
                         _ => {}
                     },
-                    None => return Ok(()),
+                    None => {
+                        if remote_session.disconnect().is_some() { capture_broker.stop_remote("teacher_disconnected"); }
+                        return Ok(());
+                    },
                 }
             }
         }
