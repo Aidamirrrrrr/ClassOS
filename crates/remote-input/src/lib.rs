@@ -49,6 +49,12 @@ pub trait RemoteInput {
     ) -> Result<(), RemoteInputError>;
 }
 
+/// Возвращает размер primary desktop, в который Session Host вводит события.
+#[cfg(not(windows))]
+pub fn primary_display_size() -> Result<(u32, u32), RemoteInputError> {
+    Err(RemoteInputError::BackendUnavailable)
+}
+
 pub fn normalized_to_pixels(
     x: f32,
     y: f32,
@@ -101,7 +107,7 @@ impl RemoteInput for SendInputRemote {
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::SendInputRemote;
+pub use windows::{SendInputRemote, primary_display_size};
 
 #[cfg(test)]
 mod tests {

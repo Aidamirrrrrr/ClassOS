@@ -965,7 +965,7 @@ name = "remote-input"
 version = "0.1.0"
 dependencies = [
  "thiserror",
- "windows",
+ "windows-platform",
 ]
 
 [[package]]

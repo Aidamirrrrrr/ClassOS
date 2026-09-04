@@ -9,6 +9,7 @@
 pub mod crypto;
 pub mod error;
 pub mod handles;
+pub mod input;
 pub mod pipes;
 pub mod process;
 pub mod security;

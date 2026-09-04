@@ -5,6 +5,10 @@ use std::time::Duration;
 
 use protocol::envelope::Payload;
 use protocol::{CaptureError, Envelope, LOCAL_PROTOCOL_VERSION, Pong, SessionHello, SessionInfo};
+use remote_input::{
+    MouseButton as InputMouseButton, RemoteInput, RemoteInputEvent as InputEvent, SendInputRemote,
+    primary_display_size,
+};
 use screen_capture::{
     DxgiDesktopCapture, FrameEncoder, JpegEncoder, ScreenCapture, scale_to_max_width,
 };
@@ -58,6 +62,37 @@ fn public_capture_error(error: &screen_capture::CaptureError) -> (&'static str, 
     }
 }
 
+fn to_input_event(event: protocol::RemoteInputEvent) -> Result<InputEvent, &'static str> {
+    match event.event {
+        Some(protocol::remote_input_event::Event::MouseMove(value)) => Ok(InputEvent::MouseMove {
+            x: value.x,
+            y: value.y,
+        }),
+        Some(protocol::remote_input_event::Event::MouseButton(value)) => {
+            let button = match protocol::mouse_button::Button::try_from(value.button) {
+                Ok(protocol::mouse_button::Button::Left) => InputMouseButton::Left,
+                Ok(protocol::mouse_button::Button::Right) => InputMouseButton::Right,
+                Ok(protocol::mouse_button::Button::Middle) => InputMouseButton::Middle,
+                Err(_) => return Err("неизвестная кнопка мыши"),
+            };
+            Ok(InputEvent::MouseButton {
+                button,
+                is_down: value.is_down,
+                x: value.x,
+                y: value.y,
+            })
+        }
+        Some(protocol::remote_input_event::Event::MouseWheel(value)) => {
+            Ok(InputEvent::MouseWheel { delta: value.delta })
+        }
+        Some(protocol::remote_input_event::Event::KeyEvent(value)) => Ok(InputEvent::Key {
+            virtual_key_code: value.virtual_key_code,
+            is_down: value.is_down,
+        }),
+        None => Err("remote input не содержит события"),
+    }
+}
+
 pub async fn run(session_id: u32, pipe_name: &str) -> std::io::Result<()> {
     let mut client = IpcClient::connect(pipe_name).await?;
 
@@ -88,6 +123,8 @@ pub async fn run(session_id: u32, pipe_name: &str) -> std::io::Result<()> {
         }
     }
 
+    let mut remote_input = SendInputRemote::new();
+    let mut remote_session: Option<String> = None;
     loop {
         let recv_result = tokio::time::timeout(PARENT_DEATH_GRACE_PERIOD * 5, client.recv()).await;
 
@@ -163,7 +200,67 @@ pub async fn run(session_id: u32, pipe_name: &str) -> std::io::Result<()> {
                     break;
                 }
             }
+            Some(Payload::RemoteControlStart(request)) => {
+                remote_session = Some(request.session_id.clone());
+                tracing::info!(session_id = %request.session_id, event = "REMOTE_CONTROL_INDICATOR_SHOWN");
+                let response = Envelope {
+                    message_id: new_message_id(),
+                    payload: Some(Payload::RemoteControlStarted(
+                        protocol::RemoteControlStarted {
+                            session_id: request.session_id,
+                        },
+                    )),
+                };
+                if client.send(&response).await.is_err() {
+                    break;
+                }
+            }
+            Some(Payload::RemoteControlStop(request)) => {
+                remote_session = None;
+                tracing::info!(reason = %request.reason, event = "REMOTE_CONTROL_INDICATOR_HIDDEN");
+                let response = Envelope {
+                    message_id: new_message_id(),
+                    payload: Some(Payload::RemoteControlStopped(
+                        protocol::RemoteControlStopped {
+                            reason: request.reason,
+                        },
+                    )),
+                };
+                if client.send(&response).await.is_err() {
+                    break;
+                }
+            }
+            Some(Payload::RemoteInputEvent(event)) => {
+                let Some(active_session) = remote_session.as_deref() else {
+                    tracing::warn!(
+                        event = "REMOTE_INPUT_REJECTED",
+                        reason = "no_active_session"
+                    );
+                    continue;
+                };
+                let result = to_input_event(event).and_then(|input| {
+                    let (width, height) =
+                        primary_display_size().map_err(|_| "desktop недоступен")?;
+                    remote_input
+                        .apply(&input, width, height)
+                        .map_err(|_| "SendInput отклонил событие")
+                });
+                match result {
+                    Ok(()) => {
+                        tracing::debug!(session_id = %active_session, event = "REMOTE_INPUT_APPLIED")
+                    }
+                    Err(reason) => {
+                        tracing::warn!(session_id = %active_session, event = "REMOTE_INPUT_REJECTED", reason)
+                    }
+                }
+            }
             Some(Payload::Shutdown(_)) => {
+                if remote_session.take().is_some() {
+                    tracing::info!(
+                        event = "REMOTE_CONTROL_INDICATOR_HIDDEN",
+                        reason = "service_shutdown"
+                    );
+                }
                 tracing::info!("received Shutdown, exiting");
                 break;
             }

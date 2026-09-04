@@ -7,4 +7,4 @@ edition.workspace = true
 thiserror = "2.0.20"
 
 [target."cfg(windows)".dependencies]
-windows = { version = "0.62.2", features = ["Win32_UI_Input_KeyboardAndMouse"] }
+windows-platform = { version = "0.1.0", path = "../windows-platform" }

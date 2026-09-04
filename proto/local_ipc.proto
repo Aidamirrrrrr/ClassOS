@@ -24,6 +24,8 @@ message Envelope {
     RemoteControlStart remote_control_start = 20;
     RemoteControlStop remote_control_stop = 21;
     RemoteInputEvent remote_input_event = 22;
+    RemoteControlStarted remote_control_started = 23;
+    RemoteControlStopped remote_control_stopped = 24;
   }
 }
 
@@ -95,6 +97,8 @@ message CaptureError {
 
 message RemoteControlStart { string session_id = 1; }
 message RemoteControlStop { string reason = 1; }
+message RemoteControlStarted { string session_id = 1; }
+message RemoteControlStopped { string reason = 1; }
 
 message RemoteInputEvent {
   oneof event {

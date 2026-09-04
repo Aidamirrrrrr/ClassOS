@@ -48,6 +48,13 @@ enum ConnectionCommand {
         request: protocol::CaptureRequest,
         response: oneshot::Sender<Result<protocol::Frame, protocol::CaptureError>>,
     },
+    RemoteStart {
+        session_id: String,
+        response: oneshot::Sender<Result<(), protocol::CaptureError>>,
+    },
+    RemoteStop {
+        reason: String,
+    },
 }
 
 #[derive(Default)]
@@ -101,6 +108,52 @@ impl CaptureBroker {
                 code: "SESSION_HOST_DISCONNECTED".to_owned(),
                 message: "Session Host закрыл запрос".to_owned(),
             })?
+    }
+
+    async fn start_remote(&self, session_id: String) -> Result<(), protocol::CaptureError> {
+        let sender = self
+            .current
+            .lock()
+            .expect("capture broker mutex poisoned")
+            .as_ref()
+            .map(|(_, sender)| sender.clone())
+            .ok_or_else(|| protocol::CaptureError {
+                code: "NO_INTERACTIVE_SESSION".to_owned(),
+                message: "нет активной пользовательской сессии".to_owned(),
+            })?;
+        let (response, receiver) = oneshot::channel();
+        sender
+            .send(ConnectionCommand::RemoteStart {
+                session_id,
+                response,
+            })
+            .map_err(|_| protocol::CaptureError {
+                code: "SESSION_HOST_DISCONNECTED".to_owned(),
+                message: "Session Host недоступен".to_owned(),
+            })?;
+        tokio::time::timeout(Duration::from_secs(3), receiver)
+            .await
+            .map_err(|_| protocol::CaptureError {
+                code: "REMOTE_CONTROL_TIMEOUT".to_owned(),
+                message: "Session Host не подтвердил control-сессию".to_owned(),
+            })?
+            .map_err(|_| protocol::CaptureError {
+                code: "SESSION_HOST_DISCONNECTED".to_owned(),
+                message: "Session Host закрыл control-сессию".to_owned(),
+            })?
+    }
+
+    fn stop_remote(&self, reason: &str) {
+        if let Some((_, sender)) = self
+            .current
+            .lock()
+            .expect("capture broker mutex poisoned")
+            .as_ref()
+        {
+            let _ = sender.send(ConnectionCommand::RemoteStop {
+                reason: reason.to_owned(),
+            });
+        }
     }
 }
 
@@ -306,6 +359,8 @@ async fn connection_task(
     let mut pending_capture: Option<
         oneshot::Sender<Result<protocol::Frame, protocol::CaptureError>>,
     > = None;
+    let mut pending_remote_start: Option<oneshot::Sender<Result<(), protocol::CaptureError>>> =
+        None;
 
     loop {
         tokio::select! {
@@ -334,6 +389,22 @@ async fn connection_task(
                             break;
                         }
                         pending_capture = Some(response);
+                    }
+                    Some(ConnectionCommand::RemoteStart { session_id, response }) => {
+                        if pending_remote_start.is_some() {
+                            let _ = response.send(Err(protocol::CaptureError { code: "REMOTE_CONTROL_BUSY".to_owned(), message: "предыдущий запрос control ещё обрабатывается".to_owned() }));
+                            continue;
+                        }
+                        let request = Envelope { message_id: new_message_id(), payload: Some(Payload::RemoteControlStart(protocol::RemoteControlStart { session_id })) };
+                        if connection.send(&request).await.is_err() {
+                            let _ = response.send(Err(protocol::CaptureError { code: "SESSION_HOST_DISCONNECTED".to_owned(), message: "не удалось начать control-сессию".to_owned() }));
+                            break;
+                        }
+                        pending_remote_start = Some(response);
+                    }
+                    Some(ConnectionCommand::RemoteStop { reason }) => {
+                        let request = Envelope { message_id: new_message_id(), payload: Some(Payload::RemoteControlStop(protocol::RemoteControlStop { reason })) };
+                        if connection.send(&request).await.is_err() { break; }
                     }
                     None => break,
                 }
@@ -376,6 +447,13 @@ async fn connection_task(
                             Some(Payload::CaptureError(error)) => {
                                 if let Some(response) = pending_capture.take() { let _ = response.send(Err(error.clone())); }
                                 tracing::warn!(session_id, pid, code = error.code, message = error.message, event = "CAPTURE_FAILED");
+                            }
+                            Some(Payload::RemoteControlStarted(_)) => {
+                                if let Some(response) = pending_remote_start.take() { let _ = response.send(Ok(())); }
+                                tracing::info!(session_id, pid, event = "REMOTE_CONTROL_SESSION_READY");
+                            }
+                            Some(Payload::RemoteControlStopped(stopped)) => {
+                                tracing::info!(session_id, pid, reason = stopped.reason, event = "REMOTE_CONTROL_SESSION_STOPPED");
                             }
                             _ => tracing::warn!(session_id, pid, "received unexpected IPC message"),
                         }
