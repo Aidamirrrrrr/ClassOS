@@ -49,6 +49,46 @@ impl StreamSchedule {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameClock {
+    schedule: StreamSchedule,
+    next_due_unix_ms: i64,
+    sequence: u32,
+}
+
+impl FrameClock {
+    pub fn new(schedule: StreamSchedule, now_unix_ms: i64) -> Self {
+        Self {
+            schedule,
+            next_due_unix_ms: now_unix_ms,
+            sequence: 0,
+        }
+    }
+
+    pub fn update(&mut self, schedule: StreamSchedule, now_unix_ms: i64) {
+        self.schedule = schedule;
+        self.next_due_unix_ms = now_unix_ms;
+    }
+
+    /// Возвращает sequence одного кадра, если он уже должен быть создан.
+    /// После долгой паузы не пытается наверстать пропущенные кадры burst'ом.
+    pub fn take_due(&mut self, now_unix_ms: i64) -> Option<u32> {
+        let interval = self.schedule.interval()?;
+        if now_unix_ms < self.next_due_unix_ms {
+            return None;
+        }
+        let sequence = self.sequence;
+        self.sequence = self.sequence.wrapping_add(1);
+        self.next_due_unix_ms =
+            now_unix_ms.saturating_add(i64::try_from(interval.as_millis()).unwrap_or(i64::MAX));
+        Some(sequence)
+    }
+
+    pub fn schedule(self) -> StreamSchedule {
+        self.schedule
+    }
+}
+
 /// Ограничивает подсказки Teacher безопасными пределами Agent.
 pub fn negotiate_schedule(
     mode: StreamVisibility,
@@ -177,5 +217,26 @@ mod tests {
         subscription.refresh(10_000);
         assert!(!subscription.is_expired(20_000));
         assert!(subscription.is_expired(26_000));
+    }
+
+    #[test]
+    fn frame_clock_does_not_burst_after_pause() {
+        let schedule = negotiate_schedule(StreamVisibility::Visible, 2, 640);
+        let mut clock = FrameClock::new(schedule, 1_000);
+        assert_eq!(clock.take_due(1_000), Some(0));
+        assert_eq!(clock.take_due(1_499), None);
+        assert_eq!(clock.take_due(10_000), Some(1));
+        assert_eq!(clock.take_due(10_001), None);
+    }
+
+    #[test]
+    fn hidden_clock_stops_and_selected_restarts_immediately() {
+        let hidden = negotiate_schedule(StreamVisibility::Hidden, 1, 640);
+        let selected = negotiate_schedule(StreamVisibility::Selected, 15, 1920);
+        let mut clock = FrameClock::new(hidden, 1_000);
+        assert_eq!(clock.take_due(2_000), None);
+        clock.update(selected, 2_000);
+        assert_eq!(clock.take_due(2_000), Some(0));
+        assert_eq!(clock.schedule(), selected);
     }
 }
