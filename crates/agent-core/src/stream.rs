@@ -168,6 +168,31 @@ impl<T> PriorityQueue<T> {
     }
 }
 
+/// Следующее сообщение на отправку.
+///
+/// Перед выбором забирает из канала всё, что уже накопилось. Именно этот
+/// порядок даёт требуемое свойство: control-сообщение, пришедшее пока
+/// писалось предыдущее, обгоняет очередь кадров, а не встаёт за ней
+/// (spec T3 §106). Кадры сверх ёмкости отбрасываются здесь же — устаревший
+/// кадр не нужен никому.
+///
+/// Возвращает `None`, когда отправлять больше нечего и канал закрыт.
+pub async fn next_outbound<T>(
+    inbox: &mut tokio::sync::mpsc::Receiver<(OutboundPriority, T)>,
+    queue: &mut PriorityQueue<T>,
+) -> Option<T> {
+    loop {
+        while let Ok((priority, value)) = inbox.try_recv() {
+            queue.push(priority, value);
+        }
+        if let Some(value) = queue.pop() {
+            return Some(value);
+        }
+        let (priority, value) = inbox.recv().await?;
+        queue.push(priority, value);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +223,68 @@ mod tests {
         assert_eq!(queue.pop(), Some("heartbeat"));
         assert_eq!(queue.pop(), Some("selected"));
         assert_eq!(queue.pop(), Some("thumbnail"));
+    }
+
+    /// Проверяет то, ради чего очередь существует: пока писалось предыдущее
+    /// сообщение, в канал успели прийти и кадры, и control — уйти первым
+    /// обязан control.
+    #[tokio::test]
+    async fn control_does_not_wait_behind_queued_frames() {
+        let (tx, mut inbox) = tokio::sync::mpsc::channel(8);
+        let mut queue = PriorityQueue::new(2);
+
+        tx.send((OutboundPriority::ThumbnailScreen, "frame-1"))
+            .await
+            .unwrap();
+        tx.send((OutboundPriority::SelectedScreen, "frame-2"))
+            .await
+            .unwrap();
+        tx.send((OutboundPriority::Control, "command-result"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            next_outbound(&mut inbox, &mut queue).await,
+            Some("command-result")
+        );
+        assert_eq!(next_outbound(&mut inbox, &mut queue).await, Some("frame-2"));
+        assert_eq!(next_outbound(&mut inbox, &mut queue).await, Some("frame-1"));
+    }
+
+    /// Медленный получатель не должен приводить к показу устаревшей картинки:
+    /// лишние кадры отбрасываются, а не копятся.
+    #[tokio::test]
+    async fn stale_frames_are_dropped_before_sending() {
+        let (tx, mut inbox) = tokio::sync::mpsc::channel(8);
+        let mut queue = PriorityQueue::new(1);
+
+        for frame in ["frame-1", "frame-2", "frame-3"] {
+            tx.send((OutboundPriority::ThumbnailScreen, frame))
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(next_outbound(&mut inbox, &mut queue).await, Some("frame-3"));
+        drop(tx);
+        assert_eq!(next_outbound(&mut inbox, &mut queue).await, None);
+    }
+
+    /// Закрытый канал с непустой очередью обязан сначала отдать остаток:
+    /// иначе последний CommandResult терялся бы на разрыве соединения.
+    #[tokio::test]
+    async fn queued_messages_survive_channel_close() {
+        let (tx, mut inbox) = tokio::sync::mpsc::channel(8);
+        let mut queue = PriorityQueue::new(2);
+        tx.send((OutboundPriority::Control, "command-result"))
+            .await
+            .unwrap();
+        drop(tx);
+
+        assert_eq!(
+            next_outbound(&mut inbox, &mut queue).await,
+            Some("command-result")
+        );
+        assert_eq!(next_outbound(&mut inbox, &mut queue).await, None);
     }
 
     #[test]

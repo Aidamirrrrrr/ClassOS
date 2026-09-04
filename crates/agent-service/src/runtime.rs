@@ -14,6 +14,7 @@ use agent_core::commands::{
     CommandAdmission, CommandDeduplicator, catalog_application, is_allowed_url,
 };
 use agent_core::domain::ProcessSpec;
+use agent_core::stream::{OutboundPriority, PriorityQueue, next_outbound};
 use agent_core::supervisor::{ServiceEvent, SessionSupervisor, SupervisorEvent};
 use agent_core::traits::SessionProcessLauncher;
 use protocol::envelope::Payload;
@@ -1339,8 +1340,73 @@ async fn serve_heartbeat(
     result
 }
 
+/// Ёмкость канала до writer-таска. Она ограничивает не поток кадров (их
+/// отбрасывает сама очередь), а накопление control-сообщений: если
+/// преподаватель перестал читать сокет совсем, соединение нужно закрыть, а
+/// не растить буфер бесконечно.
+const OUTBOUND_CHANNEL_CAPACITY: usize = 64;
+
+/// Сколько кадров каждого режима допустимо держать в очереди. Больше одного
+/// нужно, чтобы короткая задержка сети не приводила к разрыву ритма, но
+/// глубокая очередь означала бы показ преподавателю устаревшей картинки.
+const SCREEN_QUEUE_CAPACITY: usize = 2;
+
+type Outbound = (OutboundPriority, protocol::network::Envelope);
+
+#[derive(Debug, thiserror::Error)]
+#[error("control-соединение не принимает сообщения")]
+struct OutboundClosed;
+
+/// Ставит сообщение в очередь на отправку.
+///
+/// Синхронная по существу: запись в сокет выполняет отдельный таск, поэтому
+/// медленный получатель не может заблокировать чтение входящих
+/// control-сообщений (spec T3 §106).
+fn enqueue(
+    outbound: &mpsc::Sender<Outbound>,
+    priority: OutboundPriority,
+    envelope: protocol::network::Envelope,
+) -> Result<(), OutboundClosed> {
+    match outbound.try_send((priority, envelope)) {
+        Ok(()) => Ok(()),
+        Err(mpsc::error::TrySendError::Closed(_)) => Err(OutboundClosed),
+        Err(mpsc::error::TrySendError::Full(_)) => match priority {
+            // Кадр можно потерять молча — на следующем тике будет свежий.
+            OutboundPriority::SelectedScreen | OutboundPriority::ThumbnailScreen => {
+                tracing::debug!(event = "SCREEN_FRAME_DROPPED", reason = "outbound_full");
+                Ok(())
+            }
+            // Заполненная очередь control означает, что получатель не читает
+            // сокет вообще: продолжать накапливать состояние бессмысленно.
+            OutboundPriority::Control => {
+                tracing::warn!(event = "CONTROL_BACKPRESSURE", reason = "outbound_full");
+                Err(OutboundClosed)
+            }
+        },
+    }
+}
+
+/// Единственный писатель в сокет.
+///
+/// Перед каждой записью очередь добирает всё, что накопилось в канале: именно
+/// в этот момент control обгоняет кадры, а устаревшие кадры отбрасываются.
+async fn outbound_writer<S>(
+    mut writer: transport::ControlWriter<S>,
+    mut inbox: mpsc::Receiver<Outbound>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut queue = PriorityQueue::new(SCREEN_QUEUE_CAPACITY);
+    while let Some(envelope) = next_outbound(&mut inbox, &mut queue).await {
+        if let Err(error) = writer.send(&envelope).await {
+            tracing::debug!(error = %error, event = "CONTROL_WRITE_FAILED");
+            return;
+        }
+    }
+}
+
 async fn serve_heartbeat_loop(
-    mut connection: transport::ServerControlConnection,
+    connection: transport::ServerControlConnection,
     device_id: String,
     teacher_session_id: String,
     capture_broker: Arc<CaptureBroker>,
@@ -1353,37 +1419,42 @@ async fn serve_heartbeat_loop(
     let mut last_seen = std::time::Instant::now();
     let mut subscription: Option<agent_core::stream::ActiveSubscription> = None;
     let mut frame_clock: Option<agent_core::stream::FrameClock> = None;
-    loop {
+
+    let (mut reader, writer) = connection.split();
+    let (outbound, inbox) = mpsc::channel::<Outbound>(OUTBOUND_CHANNEL_CAPACITY);
+    let writer_task = tokio::spawn(outbound_writer(writer, inbox));
+
+    let result = loop {
         tokio::select! {
             _ = tick.tick() => {
                 if last_seen.elapsed() > agent_core::network::NETWORK_OFFLINE_TIMEOUT {
                     if capture_broker.release_remote(&teacher_session_id).is_some() { capture_broker.stop_remote("teacher_disconnected"); }
-                    return Ok(());
+                    break Ok(());
                 }
                 if subscription.is_some_and(|value| value.is_expired(now_unix_ms())) {
                     subscription = None;
                     frame_clock = None;
                     tracing::info!(event = "STREAM_SUBSCRIPTION_EXPIRED");
                 }
-                connection.send(&protocol::network::Envelope {
+                enqueue(&outbound, OutboundPriority::Control, protocol::network::Envelope {
                     protocol_version: protocol::network::PROTOCOL_VERSION,
                     message_id: new_message_id(),
                     timestamp_ms: now_unix_ms(),
                     payload: Some(protocol::network::envelope::Payload::Heartbeat(protocol::network::Heartbeat {
                         sequence: last_seen.elapsed().as_secs(), sent_at_unix_ms: now_unix_ms(),
                     })),
-                }).await?;
+                })?;
             }
             _ = health_tick.tick() => {
                 // P2-приоритет: отчёт уходит редко и не конкурирует с
                 // control-каналом и потоком экранов (spec T7 §4.3).
                 if let Some(report) = build_health_report(&capture_broker, &device_id, false).await {
-                    connection.send(&protocol::network::Envelope {
+                    enqueue(&outbound, OutboundPriority::Control, protocol::network::Envelope {
                         protocol_version: protocol::network::PROTOCOL_VERSION,
                         message_id: new_message_id(),
                         timestamp_ms: now_unix_ms(),
                         payload: Some(protocol::network::envelope::Payload::DeviceHealthReport(report)),
-                    }).await?;
+                    })?;
                 }
             }
             _ = stream_tick.tick() => {
@@ -1422,14 +1493,20 @@ async fn serve_heartbeat_loop(
                         message: error.message,
                     }),
                 };
-                connection.send(&protocol::network::Envelope {
+                // Кадры экрана — единственный трафик, который допустимо
+                // потерять: устаревший кадр не нужен никому (spec T3 §106).
+                let priority = match mode {
+                    protocol::network::StreamMode::Selected => OutboundPriority::SelectedScreen,
+                    _ => OutboundPriority::ThumbnailScreen,
+                };
+                enqueue(&outbound, priority, protocol::network::Envelope {
                     protocol_version: protocol::network::PROTOCOL_VERSION,
                     message_id: new_message_id(),
                     timestamp_ms: now_unix_ms(),
                     payload: Some(payload),
-                }).await?;
+                })?;
             }
-            received = connection.recv() => {
+            received = reader.recv() => {
                 match received? {
                     Some(message) => match message.payload {
                         Some(protocol::network::envelope::Payload::Heartbeat(_)) => {
@@ -1475,12 +1552,12 @@ async fn serve_heartbeat_loop(
                                     Err(error) => protocol::network::envelope::Payload::CaptureError(protocol::network::CaptureError { code: error.code, message: error.message }),
                                 }
                             };
-                            connection.send(&protocol::network::Envelope {
+                            enqueue(&outbound, OutboundPriority::Control, protocol::network::Envelope {
                                 protocol_version: protocol::network::PROTOCOL_VERSION,
                                 message_id: new_message_id(),
                                 timestamp_ms: now_unix_ms(),
                                 payload: Some(payload),
-                            }).await?;
+                            })?;
                         }
                         Some(protocol::network::envelope::Payload::HealthRequest(request)) => {
                             if request.device_id != device_id {
@@ -1490,12 +1567,12 @@ async fn serve_heartbeat_loop(
                             // Явный запрос обновляет инвентарь принудительно:
                             // администратор нажал кнопку и ждёт свежие данные.
                             if let Some(report) = build_health_report(&capture_broker, &device_id, true).await {
-                                connection.send(&protocol::network::Envelope {
+                                enqueue(&outbound, OutboundPriority::Control, protocol::network::Envelope {
                                     protocol_version: protocol::network::PROTOCOL_VERSION,
                                     message_id: new_message_id(),
                                     timestamp_ms: now_unix_ms(),
                                     payload: Some(protocol::network::envelope::Payload::DeviceHealthReport(report)),
-                                }).await?;
+                                })?;
                             }
                         }
                         Some(protocol::network::envelope::Payload::Command(command)) => {
@@ -1513,12 +1590,12 @@ async fn serve_heartbeat_loop(
                                     };
                                     capture_broker.complete_command(&command_id, result.clone());
                                     if let Some(repair) = repair {
-                                        connection.send(&protocol::network::Envelope {
+                                        enqueue(&outbound, OutboundPriority::Control, protocol::network::Envelope {
                                             protocol_version: protocol::network::PROTOCOL_VERSION,
                                             message_id: new_message_id(),
                                             timestamp_ms: now_unix_ms(),
                                             payload: Some(protocol::network::envelope::Payload::RepairResult(repair)),
-                                        }).await?;
+                                        })?;
                                     }
                                     result
                                 }
@@ -1537,12 +1614,12 @@ async fn serve_heartbeat_loop(
                                 ),
                             };
                             tracing::info!(teacher_session_id = %teacher_session_id, command_id = %result.command_id, success = result.success, error_code = %result.error_code, action = "CLASSROOM_COMMAND", event = "AUDIT");
-                            connection.send(&protocol::network::Envelope {
+                            enqueue(&outbound, OutboundPriority::Control, protocol::network::Envelope {
                                 protocol_version: protocol::network::PROTOCOL_VERSION,
                                 message_id: new_message_id(),
                                 timestamp_ms: now_unix_ms(),
                                 payload: Some(protocol::network::envelope::Payload::CommandResult(result)),
-                            }).await?;
+                            })?;
                         }
                         Some(protocol::network::envelope::Payload::RemoteControlStart(request)) => {
                             let session_id = new_message_id();
@@ -1560,7 +1637,7 @@ async fn serve_heartbeat_loop(
                                 tracing::info!(teacher_session_id = %teacher_session_id, session_id = %session_id, action = "REMOTE_CONTROL_STARTED", result = "SUCCESS", event = "AUDIT");
                                 protocol::network::envelope::Payload::RemoteControlStarted(protocol::network::RemoteControlStarted { device_id: device_id.clone(), session_id })
                             };
-                            connection.send(&protocol::network::Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: new_message_id(), timestamp_ms: now_unix_ms(), payload: Some(payload) }).await?;
+                            enqueue(&outbound, OutboundPriority::Control, protocol::network::Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: new_message_id(), timestamp_ms: now_unix_ms(), payload: Some(payload) })?;
                         }
                         Some(protocol::network::envelope::Payload::RemoteControlStop(request)) => {
                             let payload = if request.device_id != device_id {
@@ -1579,7 +1656,7 @@ async fn serve_heartbeat_loop(
                                     }
                                 }
                             };
-                            connection.send(&protocol::network::Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: new_message_id(), timestamp_ms: now_unix_ms(), payload: Some(payload) }).await?;
+                            enqueue(&outbound, OutboundPriority::Control, protocol::network::Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: new_message_id(), timestamp_ms: now_unix_ms(), payload: Some(payload) })?;
                         }
                         Some(protocol::network::envelope::Payload::RemoteInputEvent(event)) => {
                             if event.device_id != device_id || !capture_broker.accepts_remote_input(&teacher_session_id) {
@@ -1596,12 +1673,18 @@ async fn serve_heartbeat_loop(
                     },
                     None => {
                         if capture_broker.release_remote(&teacher_session_id).is_some() { capture_broker.stop_remote("teacher_disconnected"); }
-                        return Ok(());
+                        break Ok(());
                     },
                 }
             }
         }
-    }
+    };
+
+    // Закрываем канал и даём писателю дослать уже принятые сообщения:
+    // иначе последний CommandResult мог бы потеряться на разрыве.
+    drop(outbound);
+    let _ = writer_task.await;
+    result
 }
 
 /// Интервал обновления checkpoint в состоянии StopPending. Он должен быть

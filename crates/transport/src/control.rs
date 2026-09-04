@@ -12,7 +12,7 @@ use rustls::crypto::{verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, Error as TlsError, SignatureScheme};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::client::TlsStream as ClientTlsStream;
 use tokio_rustls::server::TlsStream as ServerTlsStream;
@@ -60,42 +60,97 @@ where
     }
 
     pub async fn send(&mut self, envelope: &Envelope) -> Result<(), ControlError> {
-        let payload = envelope.encode_to_vec();
-        let size = u32::try_from(payload.len()).map_err(|_| ControlError::FrameTooLarge {
-            actual: u32::MAX,
-            maximum: MAX_CONTROL_FRAME_SIZE,
-        })?;
-        if size > MAX_CONTROL_FRAME_SIZE {
-            return Err(ControlError::FrameTooLarge {
-                actual: size,
-                maximum: MAX_CONTROL_FRAME_SIZE,
-            });
-        }
-        self.stream.write_all(&size.to_be_bytes()).await?;
-        self.stream.write_all(&payload).await?;
-        self.stream.flush().await?;
-        Ok(())
+        write_frame(&mut self.stream, envelope).await
     }
 
     /// Возвращает `Ok(None)` при штатном EOF между сообщениями.
     pub async fn recv(&mut self) -> Result<Option<Envelope>, ControlError> {
-        let mut size_bytes = [0_u8; 4];
-        match self.stream.read_exact(&mut size_bytes).await {
-            Ok(_) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-            Err(err) => return Err(err.into()),
-        }
-        let size = u32::from_be_bytes(size_bytes);
-        if size > MAX_CONTROL_FRAME_SIZE {
-            return Err(ControlError::FrameTooLarge {
-                actual: size,
-                maximum: MAX_CONTROL_FRAME_SIZE,
-            });
-        }
-        let mut payload = vec![0_u8; size as usize];
-        self.stream.read_exact(&mut payload).await?;
-        Ok(Some(Envelope::decode(payload.as_slice())?))
+        read_frame(&mut self.stream).await
     }
+
+    /// Разделяет соединение на независимые половины.
+    ///
+    /// Нужно там, где чтение не должно ждать записи: пока медленный
+    /// получатель не разобрал очередь кадров экрана, входящие
+    /// control-сообщения обязаны продолжать читаться (spec T3 §106).
+    pub fn split(self) -> (ControlReader<S>, ControlWriter<S>) {
+        let (reader, writer) = tokio::io::split(self.stream);
+        (
+            ControlReader { stream: reader },
+            ControlWriter { stream: writer },
+        )
+    }
+}
+
+/// Читающая половина control-соединения.
+pub struct ControlReader<S> {
+    stream: ReadHalf<S>,
+}
+
+impl<S> ControlReader<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    /// Возвращает `Ok(None)` при штатном EOF между сообщениями.
+    pub async fn recv(&mut self) -> Result<Option<Envelope>, ControlError> {
+        read_frame(&mut self.stream).await
+    }
+}
+
+/// Пишущая половина control-соединения.
+pub struct ControlWriter<S> {
+    stream: WriteHalf<S>,
+}
+
+impl<S> ControlWriter<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    pub async fn send(&mut self, envelope: &Envelope) -> Result<(), ControlError> {
+        write_frame(&mut self.stream, envelope).await
+    }
+}
+
+async fn write_frame<W: AsyncWrite + Unpin>(
+    stream: &mut W,
+    envelope: &Envelope,
+) -> Result<(), ControlError> {
+    let payload = envelope.encode_to_vec();
+    let size = u32::try_from(payload.len()).map_err(|_| ControlError::FrameTooLarge {
+        actual: u32::MAX,
+        maximum: MAX_CONTROL_FRAME_SIZE,
+    })?;
+    if size > MAX_CONTROL_FRAME_SIZE {
+        return Err(ControlError::FrameTooLarge {
+            actual: size,
+            maximum: MAX_CONTROL_FRAME_SIZE,
+        });
+    }
+    stream.write_all(&size.to_be_bytes()).await?;
+    stream.write_all(&payload).await?;
+    stream.flush().await?;
+    Ok(())
+}
+
+async fn read_frame<R: AsyncRead + Unpin>(
+    stream: &mut R,
+) -> Result<Option<Envelope>, ControlError> {
+    let mut size_bytes = [0_u8; 4];
+    match stream.read_exact(&mut size_bytes).await {
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(err) => return Err(err.into()),
+    }
+    let size = u32::from_be_bytes(size_bytes);
+    if size > MAX_CONTROL_FRAME_SIZE {
+        return Err(ControlError::FrameTooLarge {
+            actual: size,
+            maximum: MAX_CONTROL_FRAME_SIZE,
+        });
+    }
+    let mut payload = vec![0_u8; size as usize];
+    stream.read_exact(&mut payload).await?;
+    Ok(Some(Envelope::decode(payload.as_slice())?))
 }
 
 impl ControlConnection<ClientTlsStream<TcpStream>> {

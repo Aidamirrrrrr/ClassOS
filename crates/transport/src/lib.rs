@@ -11,8 +11,8 @@ pub mod identity;
 pub mod lease;
 
 pub use control::{
-    ControlConnection, ControlError, DeviceTransport, ServerControlConnection, TlsClient,
-    TlsControlServer,
+    ControlConnection, ControlError, ControlReader, ControlWriter, DeviceTransport,
+    ServerControlConnection, TlsClient, TlsControlServer,
 };
 
 pub use authorization::{AuthorizationError, DeviceCredential, TeacherAuthority};
