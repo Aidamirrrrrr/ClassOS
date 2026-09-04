@@ -7,7 +7,8 @@ type Device = { device_id: string; hostname: string; ip: string; control_port: n
 type Code = { code: string; expires_at_unix_ms: number };
 type Membership = { organizationId: string; branchId: string | null; role: string };
 type FrameReady = { device_id: string; sequence: number };
-type CommandResult = { device_id: string; command_id: string; success: boolean; error_code: string; message: string };
+type RepairItem = { application_id: string; success: boolean; error_code: string };
+type CommandResult = { device_id: string; command_id: string; success: boolean; error_code: string; message: string; repair: RepairItem[] };
 type Drift = { application_id: string; kind: string; required_version: string; actual_version: string };
 type Health = {
   device_id: string; state: string; cpu_percent: number; ram_percent: number; disk_percent: number;
@@ -237,7 +238,15 @@ function App() {
       const results = await invoke<CommandResult[]>("dispatch_classroom_command", { deviceIds, kind, value });
       const successful = results.filter((result) => result.success).length;
       const failed = results.filter((result) => !result.success);
-      setMessage(failed.length === 0 ? `Команда выполнена: ${successful}/${results.length}` : `Команда: ${successful}/${results.length}; ${failed.map((result) => `${result.device_id}: ${result.error_code}`).join(", ")}`);
+      // Repair может завершиться успешно как команда и при этом не поставить
+      // часть приложений: показывать только «выполнено» здесь нельзя.
+      const brokenPackages = results.flatMap((result) =>
+        (result.repair ?? []).filter((item) => !item.success).map((item) => `${result.device_id}: ${item.application_id} (${item.error_code})`),
+      );
+      const summary = failed.length === 0
+        ? `Команда выполнена: ${successful}/${results.length}`
+        : `Команда: ${successful}/${results.length}; ${failed.map((result) => `${result.device_id}: ${result.error_code}`).join(", ")}`;
+      setMessage(brokenPackages.length === 0 ? summary : `${summary}; не установлено — ${brokenPackages.join(", ")}`);
     } catch (error) { setMessage(String(error)); }
   }
 

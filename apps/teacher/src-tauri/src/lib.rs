@@ -84,6 +84,15 @@ struct CommandResultView {
     success: bool,
     error_code: String,
     message: String,
+    /// Подробности Repair по каждому приложению. Пусто для остальных команд.
+    repair: Vec<RepairItemView>,
+}
+
+#[derive(Debug, Serialize)]
+struct RepairItemView {
+    application_id: String,
+    success: bool,
+    error_code: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -864,7 +873,7 @@ async fn dispatch_command_to_device(
     value: String,
 ) -> CommandResultView {
     let command_id = Uuid::new_v4().to_string();
-    let result: Result<protocol::network::CommandResult, String> = async {
+    let result: Result<(protocol::network::CommandResult, Vec<RepairItemView>), String> = async {
         let body = command_body(&kind, &value, &device_id)?;
         let client =
             TlsClient::pinned(&device_id, device.fingerprint).map_err(|error| error.to_string())?;
@@ -914,24 +923,51 @@ async fn dispatch_command_to_device(
             })
             .await
             .map_err(|error| error.to_string())?;
-        match connection
-            .recv()
-            .await
-            .map_err(|error| error.to_string())?
-            .and_then(|message| message.payload)
-        {
-            Some(envelope::Payload::CommandResult(result)) => Ok(result),
-            _ => Err("устройство вернуло неожиданный ответ на classroom-команду".to_owned()),
+        // Repair присылает подробности по каждому приложению отдельным
+        // сообщением **до** результата команды, поэтому читать ровно одно
+        // сообщение нельзя: иначе успешный Repair выглядел бы как
+        // неожиданный ответ устройства (spec T7 §8).
+        let mut repair_items = Vec::new();
+        loop {
+            let payload = connection
+                .recv()
+                .await
+                .map_err(|error| error.to_string())?
+                .and_then(|message| message.payload)
+                .ok_or_else(|| "устройство закрыло соединение до результата команды".to_owned())?;
+            match payload {
+                envelope::Payload::CommandResult(result) => break Ok((result, repair_items)),
+                envelope::Payload::RepairResult(result) => {
+                    repair_items = result
+                        .items
+                        .into_iter()
+                        .map(|item| RepairItemView {
+                            application_id: item.application_id,
+                            success: item.success,
+                            error_code: item.error_code,
+                        })
+                        .collect();
+                }
+                // Периодический health-отчёт может прийти в любой момент и
+                // не имеет отношения к команде.
+                envelope::Payload::DeviceHealthReport(_) | envelope::Payload::Heartbeat(_) => {}
+                _ => {
+                    break Err(
+                        "устройство вернуло неожиданный ответ на classroom-команду".to_owned()
+                    );
+                }
+            }
         }
     }
     .await;
     match result {
-        Ok(result) => CommandResultView {
+        Ok((result, repair)) => CommandResultView {
             device_id,
             command_id: result.command_id,
             success: result.success,
             error_code: result.error_code,
             message: result.message,
+            repair,
         },
         Err(message) => CommandResultView {
             device_id,
@@ -939,6 +975,7 @@ async fn dispatch_command_to_device(
             success: false,
             error_code: "COMMAND_DELIVERY_FAILED".to_owned(),
             message,
+            repair: Vec::new(),
         },
     }
 }
