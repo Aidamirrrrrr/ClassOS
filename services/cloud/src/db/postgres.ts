@@ -44,6 +44,25 @@ function toBuffer(value: Uint8Array | Buffer): Buffer {
   return Buffer.isBuffer(value) ? value : Buffer.from(value);
 }
 
+/**
+ * Поле `details` хранится в jsonb, но драйвер возвращает его строкой.
+ *
+ * Разбор выполняется здесь, а не в вызывающем коде: доменный слой работает с
+ * `MemoryStore` и обязан получать одинаковый объект от обоих хранилищ, иначе
+ * тесты на in-memory перестают что-либо значить для развёртывания.
+ */
+function parseDetails(value: unknown): Record<string, unknown> {
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value) as Record<string, unknown>;
+    } catch {
+      // Нечитаемый аудит — не повод терять само событие.
+      return {};
+    }
+  }
+  return (value as Record<string, unknown>) ?? {};
+}
+
 export class PostgresStore implements Store {
   private readonly sql: SQL;
 
@@ -379,7 +398,7 @@ export class PostgresStore implements Store {
       deviceId: (row.device_id as string | null) ?? null,
       action: row.action as string,
       outcome: row.outcome as AuditEvent["outcome"],
-      details: (row.details as Record<string, unknown>) ?? {},
+      details: parseDetails(row.details),
       occurredAtUnixMs: toMs(row.occurred_at as Date)!,
     }));
   }
