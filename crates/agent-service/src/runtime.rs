@@ -1517,8 +1517,17 @@ async fn serve_heartbeat_loop(
     authorization: transport::TeacherAuthorization,
     capture_broker: Arc<CaptureBroker>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut tick = tokio::time::interval(agent_core::network::NETWORK_HEARTBEAT_INTERVAL);
-    let mut health_tick = tokio::time::interval(HEALTH_REPORT_INTERVAL);
+    // Первый тик `interval` срабатывает немедленно, поэтому обычный
+    // `interval` выдал бы преподавателю heartbeat и полный health-отчёт
+    // раньше ответа на его собственный запрос — а сбор инвентаря занимает
+    // секунды. Отсчёт начинается через период.
+    let start = tokio::time::Instant::now();
+    let mut tick = tokio::time::interval_at(
+        start + agent_core::network::NETWORK_HEARTBEAT_INTERVAL,
+        agent_core::network::NETWORK_HEARTBEAT_INTERVAL,
+    );
+    let mut health_tick =
+        tokio::time::interval_at(start + HEALTH_REPORT_INTERVAL, HEALTH_REPORT_INTERVAL);
     health_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut stream_tick = tokio::time::interval(Duration::from_millis(50));
     stream_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);

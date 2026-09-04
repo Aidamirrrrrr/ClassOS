@@ -190,6 +190,45 @@ fn create_enrollment_code(state: State<'_, AppState>) -> Result<EnrollmentCodeVi
 }
 
 /// Разбирает hex-строку Cloud в байты.
+/// Ждёт ответ устройства на конкретный запрос.
+///
+/// По тому же соединению устройство присылает heartbeat, статус и
+/// периодический health-отчёт, причём первый heartbeat уходит немедленно
+/// после авторизации. Читать ровно одно сообщение поэтому нельзя: ответом
+/// оказался бы heartbeat, и любая операция консоли завершалась бы «устройство
+/// вернуло неожиданный ответ».
+///
+/// `answer` распознаёт нужное сообщение; всё остальное пропускается. Ожидание
+/// ограничено по времени, чтобы молчащее устройство не подвешивало консоль.
+async fn recv_answer<S, T>(
+    connection: &mut transport::ControlConnection<S>,
+    what: &str,
+    mut answer: impl FnMut(envelope::Payload) -> Option<T>,
+) -> Result<T, String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let wait = async {
+        loop {
+            let payload = connection
+                .recv()
+                .await
+                .map_err(|error| error.to_string())?
+                .and_then(|message| message.payload)
+                .ok_or_else(|| format!("устройство закрыло соединение до ответа: {what}"))?;
+            if let Some(value) = answer(payload) {
+                return Ok(value);
+            }
+        }
+    };
+    tokio::time::timeout(RESPONSE_TIMEOUT, wait)
+        .await
+        .map_err(|_| format!("устройство не ответило вовремя: {what}"))?
+}
+
+/// Сколько ждать ответ устройства на запрос.
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
+
 fn hex_to_bytes(value: &str) -> Option<Vec<u8>> {
     if !value.len().is_multiple_of(2) || value.is_empty() {
         return None;
@@ -480,23 +519,18 @@ async fn request_health(
         .await
         .map_err(|error| error.to_string())?;
 
-    // Устройство может прислать heartbeat или кадр раньше отчёта: ждём именно
-    // отчёт, а не первое попавшееся сообщение.
-    for _ in 0..16 {
-        match connection
-            .recv()
-            .await
-            .map_err(|error| error.to_string())?
-            .and_then(|message| message.payload)
-        {
-            Some(protocol::network::envelope::Payload::DeviceHealthReport(report)) => {
-                return Ok(to_health_view(report));
-            }
-            Some(_) => continue,
-            None => break,
-        }
-    }
-    Err("устройство не прислало health-отчёт".to_owned())
+    // Устройство присылает heartbeat и кадры по тому же соединению, поэтому
+    // ждём именно отчёт, а не первое попавшееся сообщение.
+    let report = recv_answer(
+        &mut connection,
+        "состояние устройства",
+        |payload| match payload {
+            envelope::Payload::DeviceHealthReport(report) => Some(report),
+            _ => None,
+        },
+    )
+    .await?;
+    Ok(to_health_view(report))
 }
 
 fn to_health_view(report: protocol::network::DeviceHealthReport) -> HealthView {
@@ -602,20 +636,25 @@ async fn request_screenshot(
         })
         .await
         .map_err(|error| error.to_string())?;
-    match connection
-        .recv()
-        .await
-        .map_err(|error| error.to_string())?
-        .and_then(|message| message.payload)
-    {
-        Some(protocol::network::envelope::Payload::ScreenFrame(frame)) => {
-            store_frame(&state.frames, device_id.clone(), frame.encoded_data);
+    enum Shot {
+        Frame(Vec<u8>),
+        Failed(String),
+    }
+    let answer = recv_answer(&mut connection, "снимок экрана", |payload| match payload {
+        envelope::Payload::ScreenFrame(frame) => Some(Shot::Frame(frame.encoded_data)),
+        envelope::Payload::CaptureError(error) => {
+            Some(Shot::Failed(format!("{}: {}", error.code, error.message)))
+        }
+        _ => None,
+    })
+    .await?;
+
+    match answer {
+        Shot::Frame(data) => {
+            store_frame(&state.frames, device_id.clone(), data);
             Ok(frame_url(&device_id))
         }
-        Some(protocol::network::envelope::Payload::CaptureError(error)) => {
-            Err(format!("{}: {}", error.code, error.message))
-        }
-        _ => Err("устройство вернуло неожиданный ответ на ScreenshotRequest".to_owned()),
+        Shot::Failed(message) => Err(message),
     }
 }
 
@@ -928,15 +967,11 @@ async fn dispatch_command_to_device(
         // сообщение нельзя: иначе успешный Repair выглядел бы как
         // неожиданный ответ устройства (spec T7 §8).
         let mut repair_items = Vec::new();
-        loop {
-            let payload = connection
-                .recv()
-                .await
-                .map_err(|error| error.to_string())?
-                .and_then(|message| message.payload)
-                .ok_or_else(|| "устройство закрыло соединение до результата команды".to_owned())?;
-            match payload {
-                envelope::Payload::CommandResult(result) => break Ok((result, repair_items)),
+        let result = recv_answer(
+            &mut connection,
+            "результат команды",
+            |payload| match payload {
+                envelope::Payload::CommandResult(result) => Some(result),
                 envelope::Payload::RepairResult(result) => {
                     repair_items = result
                         .items
@@ -947,17 +982,13 @@ async fn dispatch_command_to_device(
                             error_code: item.error_code,
                         })
                         .collect();
+                    None
                 }
-                // Периодический health-отчёт может прийти в любой момент и
-                // не имеет отношения к команде.
-                envelope::Payload::DeviceHealthReport(_) | envelope::Payload::Heartbeat(_) => {}
-                _ => {
-                    break Err(
-                        "устройство вернуло неожиданный ответ на classroom-команду".to_owned()
-                    );
-                }
-            }
-        }
+                _ => None,
+            },
+        )
+        .await?;
+        Ok((result, repair_items))
     }
     .await;
     match result {
@@ -1053,11 +1084,21 @@ async fn start_remote_control(state: State<'_, AppState>, device_id: String) -> 
             connection.send(&build_teacher_hello(&authority, &credential, format!("teacher-{}", now_ms()), format!("hello-{}", now_ms()), now_ms(), lease.as_ref())).await.map_err(|error| error.to_string())?;
             connection.recv().await.map_err(|error| error.to_string())?.ok_or_else(|| "устройство не подтвердило авторизацию".to_owned())?;
             connection.send(&Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: format!("remote-start-{}", now_ms()), timestamp_ms: now_ms(), payload: Some(envelope::Payload::RemoteControlStart(protocol::network::RemoteControlStart { device_id: task_device_id.clone() })) }).await.map_err(|error| error.to_string())?;
-            match connection.recv().await.map_err(|error| error.to_string())?.and_then(|message| message.payload) {
-                Some(envelope::Payload::RemoteControlStarted(_)) => { if let Some(sender) = ready_tx.take() { let _ = sender.send(Ok(())); } }
-                Some(envelope::Payload::RemoteControlStopped(value)) => { if let Some(sender) = ready_tx.take() { let _ = sender.send(Err(format!("remote control отклонён: {}", value.reason))); } return Ok(()); }
-                _ => { if let Some(sender) = ready_tx.take() { let _ = sender.send(Err("устройство вернуло неожиданный ответ на remote start".to_owned())); } return Ok(()); }
+            // Heartbeat устройства приходит по этому же соединению и уходит
+            // сразу после авторизации, поэтому ждём именно ответ на старт.
+            let started = recv_answer(&mut connection, "старт удалённого управления", |payload| match payload {
+                envelope::Payload::RemoteControlStarted(_) => Some(Ok(())),
+                envelope::Payload::RemoteControlStopped(value) => {
+                    Some(Err(format!("remote control отклонён: {}", value.reason)))
+                }
+                _ => None,
+            })
+            .await?;
+            if let Err(reason) = started {
+                if let Some(sender) = ready_tx.take() { let _ = sender.send(Err(reason)); }
+                return Ok(());
             }
+            if let Some(sender) = ready_tx.take() { let _ = sender.send(Ok(())); }
             let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
             loop { tokio::select! {
                 _ = task_cancellation.cancelled() => { let _ = connection.send(&Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: format!("remote-stop-{}", now_ms()), timestamp_ms: now_ms(), payload: Some(envelope::Payload::RemoteControlStop(protocol::network::RemoteControlStop { device_id: task_device_id.clone() })) }).await; return Ok(()); }
