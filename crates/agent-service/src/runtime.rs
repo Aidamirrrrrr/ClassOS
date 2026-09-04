@@ -387,6 +387,22 @@ async fn execute_classroom_command(
                 }
             };
         }
+        // Policy-команды T6 исполняет сам Service: они привилегированные и не
+        // имеют маршрута в пользовательскую сессию. До подключения Windows
+        // enforcement отвечаем явным отказом, а не молчаливым успехом.
+        Some(
+            NetworkBody::ApplyPolicy(_)
+            | NetworkBody::RollbackPolicy(_)
+            | NetworkBody::FocusModeEnable(_)
+            | NetworkBody::FocusModeDisable(_),
+        ) => {
+            return command_result(
+                command_id,
+                false,
+                "POLICY_NOT_CONFIGURED",
+                "policy enforcement ещё не подключён на этом устройстве",
+            );
+        }
         None => {
             return command_result(
                 command_id,

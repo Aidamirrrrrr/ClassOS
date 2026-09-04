@@ -41,9 +41,12 @@ fn capture_frame(
     capture.start(display_id)?;
     let raw = scale_to_max_width(capture.next_frame()?, max_width.clamp(0, 3_840))?;
     capture.stop();
-    let quality = (jpeg_quality != 0)
-        .then(|| u8::try_from(jpeg_quality).unwrap_or(100))
-        .unwrap_or(80);
+    // 0 означает "качество не задано" и заменяется значением по умолчанию.
+    let quality = if jpeg_quality == 0 {
+        80
+    } else {
+        u8::try_from(jpeg_quality).unwrap_or(100)
+    };
     let mut encoder = JpegEncoder::new(quality);
     let encoded = encoder.encode(raw)?;
     Ok(protocol::Frame {
