@@ -134,6 +134,8 @@ impl EncodedFrame {
             encoded_data: self.data,
             format: self.format.to_owned(),
             captured_at_unix_ms,
+            mode: protocol::network::StreamMode::Selected as i32,
+            sequence: 0,
         }
     }
 }
