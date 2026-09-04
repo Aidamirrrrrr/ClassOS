@@ -3,8 +3,8 @@
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_FLAG, D3D11_MAP_READ, D3D11_SDK_VERSION,
-    D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device,
+    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_FLAG, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device,
     ID3D11DeviceContext, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::{
@@ -163,8 +163,8 @@ impl ScreenCapture for DxgiDesktopCapture {
                 .as_ref()
                 .ok_or(CaptureError::BackendUnavailable)?;
             unsafe { context.CopyResource(staging, &texture) };
-            let mut mapped = Default::default();
-            unsafe { context.Map(staging, 0, D3D11_MAP_READ, 0, &mut mapped) }
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            unsafe { context.Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped as *mut _)) }
                 .map_err(|error| CaptureError::Encode(format!("D3D11 map: {error}")))?;
             let mut pixels = vec![0_u8; (desc.Width as usize) * (desc.Height as usize) * 3];
             for row in 0..desc.Height as usize {
