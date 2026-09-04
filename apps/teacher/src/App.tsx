@@ -24,6 +24,7 @@ const WARNING_TEXT: Record<string, string> = {
   CPU_SATURATED: "Процессор перегружен",
   SOFTWARE_MISSING: "Не хватает программ по профилю",
   SOFTWARE_VERSION_MISMATCH: "Версия программы не соответствует профилю",
+  SOFTWARE_MANAGER_UNAVAILABLE: "Не удалось проверить установленные программы",
   POLICY_APPLY_FAILED: "Не удалось применить политику урока",
   NO_INTERACTIVE_SESSION: "Никто не вошёл в систему",
 };

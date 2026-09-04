@@ -17,6 +17,13 @@ pub mod warning {
     pub const CPU_SATURATED: &str = "CPU_SATURATED";
     pub const SOFTWARE_MISSING: &str = "SOFTWARE_MISSING";
     pub const SOFTWARE_VERSION_MISMATCH: &str = "SOFTWARE_VERSION_MISMATCH";
+    /// Менеджер пакетов недоступен: состав ПО неизвестен.
+    ///
+    /// Отдельный код от `SOFTWARE_MISSING` намеренно: «программы нет» и
+    /// «мы не смогли посмотреть, есть ли программа» требуют от администратора
+    /// разных действий, а объединение их в один код превращает исправную
+    /// машину без winget в машину без программ.
+    pub const SOFTWARE_MANAGER_UNAVAILABLE: &str = "SOFTWARE_MANAGER_UNAVAILABLE";
     pub const POLICY_APPLY_FAILED: &str = "POLICY_APPLY_FAILED";
     pub const NO_INTERACTIVE_SESSION: &str = "NO_INTERACTIVE_SESSION";
 }
@@ -55,6 +62,8 @@ pub struct AgentFacts {
     /// Расхождения software-профиля: (application_id, версия требуется).
     pub missing_software: Vec<String>,
     pub mismatched_software: Vec<String>,
+    /// Менеджер пакетов недоступен, поэтому состав ПО не проверялся.
+    pub software_manager_unavailable: bool,
 }
 
 /// Результат расчёта.
@@ -98,6 +107,15 @@ pub fn assess(metrics: &HealthMetrics, facts: &AgentFacts) -> HealthAssessment {
     }
     if metrics.cpu_percent > CPU_WARNING_PERCENT {
         raise(HealthState::Warning, warning::CPU_SATURATED, &mut warnings);
+    }
+    // Недоступный менеджер пакетов исключает разговор о составе ПО: списки
+    // расхождений при нём заведомо пусты, и молчать об этом нельзя.
+    if facts.software_manager_unavailable {
+        raise(
+            HealthState::Warning,
+            warning::SOFTWARE_MANAGER_UNAVAILABLE,
+            &mut warnings,
+        );
     }
     if !facts.missing_software.is_empty() {
         raise(
@@ -212,6 +230,7 @@ mod tests {
             missing_software: vec!["git".to_owned()],
             mismatched_software: vec!["python".to_owned()],
             no_interactive_session: true,
+            software_manager_unavailable: false,
         };
         let result = assess(&metrics(99.0, 95.0, 99.0), &facts);
 
@@ -244,6 +263,28 @@ mod tests {
         assert_eq!(
             assess(&metrics(99.0, 10.0, 10.0), &facts).state,
             HealthState::Critical
+        );
+    }
+
+    /// Машина без менеджера пакетов исправна: неизвестен состав ПО, а не
+    /// отсутствуют программы. Иначе администратор чинил бы не то.
+    #[test]
+    fn missing_package_manager_is_not_missing_software() {
+        let facts = AgentFacts {
+            software_manager_unavailable: true,
+            ..AgentFacts::default()
+        };
+        let result = assess(&metrics(5.0, 10.0, 20.0), &facts);
+
+        assert_eq!(result.state, HealthState::Warning);
+        assert_eq!(
+            result.warnings,
+            vec![warning::SOFTWARE_MANAGER_UNAVAILABLE.to_owned()]
+        );
+        assert!(
+            !result
+                .warnings
+                .contains(&warning::SOFTWARE_MISSING.to_owned())
         );
     }
 }

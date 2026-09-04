@@ -44,5 +44,6 @@ ADR фиксирует **необратимое или дорогое в раз�
 | [0014](0014-t6-windows-enforcement-providers.md) | Выбор Windows enforcement-технологии для T6 | Accepted |
 | [0015](0015-t8-agent-update-channel.md) | Канал получения обновлений агентом | Accepted |
 | [0016](0016-t8-lease-authorization-on-device.md) | Проверка прав преподавателя на устройстве по classroom lease | Accepted |
+| [0017](0017-t6-applocker-rule-conditions.md) | Условия правил AppLocker: где именно разрешён исполняемый файл | Accepted |
 
-Следующий свободный номер: **0017**.
+Следующий свободный номер: **0018**.

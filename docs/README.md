@@ -37,7 +37,8 @@ docs/
 │       ├── 0013-t5-command-privilege-routing.md
 │       ├── 0014-t6-windows-enforcement-providers.md
 │       ├── 0015-t8-agent-update-channel.md
-│       └── 0016-t8-lease-authorization-on-device.md
+│       ├── 0016-t8-lease-authorization-on-device.md
+│       └── 0017-t6-applocker-rule-conditions.md
 │
 └── specs/                                 ← ЧТО именно реализовать, milestone за milestone
     ├── BACKLOG.md                         статус всех milestone'ов T0–T8+

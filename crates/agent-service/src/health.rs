@@ -149,14 +149,27 @@ impl HealthCollector {
             tracing::warn!(error = %error, event = "HEALTH_METRICS_FAILED");
             HealthMetrics::default()
         });
-        let software = self.software(force_inventory);
-        let drifted = profile(&self.profile_id)
-            .map(|value| drift(value, &software))
-            .unwrap_or_default();
+        // Без менеджера пакетов состав ПО неизвестен. Считать его пустым
+        // означало бы отчитаться, что на исправной машине не установлено
+        // ничего, и отправить администратора чинить не то (spec T7 §4.2).
+        let software_manager_unavailable = !winget::is_available();
+        let software = if software_manager_unavailable {
+            InstalledSoftware::new()
+        } else {
+            self.software(force_inventory)
+        };
+        let drifted = if software_manager_unavailable {
+            Vec::new()
+        } else {
+            profile(&self.profile_id)
+                .map(|value| drift(value, &software))
+                .unwrap_or_default()
+        };
 
         let facts = AgentFacts {
             policy_apply_failed,
             no_interactive_session,
+            software_manager_unavailable,
             missing_software: drifted
                 .iter()
                 .filter(|entry| entry.kind == software_manager::DriftKind::Missing)
@@ -210,6 +223,14 @@ impl HealthCollector {
     pub fn repair(&self, profile_id: &str) -> Result<Vec<RepairItem>, SoftwareError> {
         if profile_id != self.profile_id {
             return Err(SoftwareError::UnknownProfile(profile_id.to_owned()));
+        }
+        // Без менеджера пакетов Repair не «частично не сработает», а не может
+        // начаться: каждая установка провалилась бы по одной и той же причине,
+        // и отчёт по пакетам скрыл бы её за списком мелких ошибок.
+        if !winget::is_available() {
+            return Err(SoftwareError::PackageManager(
+                "менеджер пакетов недоступен на устройстве".to_owned(),
+            ));
         }
         let software = self.software(true);
         let items = repair_profile(&self.packages, profile_id, &software)?;

@@ -50,21 +50,47 @@ fn escape_xml(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn path_rule(index: usize, name: &str, sid: &str, allow: bool) -> String {
-    let action = if allow { "Allow" } else { "Deny" };
-    let escaped = escape_xml(name);
+/// Каталоги, недоступные standard-user на запись.
+///
+/// Разрешать исполняемый файл где угодно нельзя: пользователь положит
+/// переименованную программу в свой профиль и обойдёт allowlist, не имея
+/// никаких привилегий (ADR-0017). `%PROGRAMFILES%` в AppLocker покрывает и
+/// 32-битный каталог.
+const ALLOWED_ROOTS: &[&str] = &["%PROGRAMFILES%", "%WINDIR%"];
+
+fn rule(index: usize, name: &str, sid: &str, action: &str, path: &str) -> String {
     format!(
         concat!(
             r#"<FilePathRule Id="{id}" Name="{action} {name}" Description="ClassOS" "#,
             r#"UserOrGroupSid="{sid}" Action="{action}">"#,
-            r#"<Conditions><FilePathCondition Path="*\{name}" /></Conditions>"#,
+            r#"<Conditions><FilePathCondition Path="{path}" /></Conditions>"#,
             r#"</FilePathRule>"#
         ),
         id = rule_id(index),
         action = action,
-        name = escaped,
+        name = escape_xml(name),
         sid = sid,
+        path = escape_xml(path),
     )
+}
+
+/// Разрешающие правила: имя файла в каждом из доверенных каталогов.
+///
+/// Возвращает по правилу на каталог, поэтому вызывающий обязан увеличивать
+/// индекс на их число.
+fn allow_rules(index: usize, name: &str, sid: &str) -> (String, usize) {
+    let mut xml = String::new();
+    for (offset, root) in ALLOWED_ROOTS.iter().enumerate() {
+        let path = format!(r"{root}\*\{name}");
+        xml.push_str(&rule(index + offset, name, sid, "Allow", &path));
+    }
+    (xml, ALLOWED_ROOTS.len())
+}
+
+/// Запрещающее правило: запрет обязан действовать в любом каталоге, иначе он
+/// обходится переносом файла (ADR-0017).
+fn deny_rule(index: usize, name: &str, sid: &str) -> String {
+    rule(index, name, sid, "Deny", &format!(r"*\{name}"))
 }
 
 fn any_path_rule(index: usize, sid: &str) -> String {
@@ -82,8 +108,10 @@ fn any_path_rule(index: usize, sid: &str) -> String {
 
 /// Строит XML политики AppLocker для коллекции Exe.
 ///
-/// `allowed` и `denied` — имена файлов (`Code.exe`), не пути: правило
-/// сопоставляется по имени в любом каталоге.
+/// `allowed` и `denied` — имена файлов (`Code.exe`), не пути. Разрешение
+/// действует только в каталогах из [`ALLOWED_ROOTS`], запрет — везде
+/// (ADR-0017): именно эта асимметрия делает allowlist невозможным обойти
+/// переименованием файла в собственном профиле.
 pub fn build_policy_xml(allowed: &[String], denied: &[String]) -> String {
     let mut rules = String::new();
     let mut index = 0;
@@ -99,13 +127,14 @@ pub fn build_policy_xml(allowed: &[String], denied: &[String]) -> String {
         index += 1;
     } else {
         for name in allowed {
-            rules.push_str(&path_rule(index, name, EVERYONE_SID, true));
-            index += 1;
+            let (xml, count) = allow_rules(index, name, EVERYONE_SID);
+            rules.push_str(&xml);
+            index += count;
         }
     }
 
     for name in denied {
-        rules.push_str(&path_rule(index, name, EVERYONE_SID, false));
+        rules.push_str(&deny_rule(index, name, EVERYONE_SID));
         index += 1;
     }
 
@@ -219,10 +248,34 @@ mod tests {
     fn allowlist_policy_contains_admin_escape_and_allowed_files() {
         let xml = build_policy_xml(&["Code.exe".to_owned()], &[]);
         assert!(xml.contains(ADMINISTRATORS_SID));
-        assert!(xml.contains(r"*\Code.exe"));
+        assert!(xml.contains(r"%PROGRAMFILES%\*\Code.exe"));
         assert!(xml.contains(r#"Action="Allow""#));
         // В allowlist-модели deny-правила не нужны и не должны появляться.
         assert!(!xml.contains(r#"Action="Deny""#));
+    }
+
+    /// Главная проверка T6: allowlist не должен разрешать файл с нужным
+    /// именем где угодно. Иначе ученик переименовывает программу в
+    /// `Code.exe`, кладёт в свой профиль и обходит Focus Mode без единой
+    /// привилегии (ADR-0017).
+    #[test]
+    fn allow_rules_never_match_a_user_writable_location() {
+        let xml = build_policy_xml(&["Code.exe".to_owned()], &[]);
+        assert!(
+            !xml.contains(r#"Path="*\Code.exe""#),
+            "разрешение по голому имени файла обходится переименованием"
+        );
+        for root in ALLOWED_ROOTS {
+            assert!(xml.contains(&format!(r"{root}\*\Code.exe")));
+        }
+    }
+
+    /// Запрет, наоборот, обязан действовать в любом каталоге: иначе он
+    /// обходится переносом файла.
+    #[test]
+    fn deny_rules_still_match_every_location() {
+        let xml = build_policy_xml(&["Code.exe".to_owned()], &["cmd.exe".to_owned()]);
+        assert!(xml.contains(r#"Path="*\cmd.exe""#));
     }
 
     #[test]
@@ -240,7 +293,11 @@ mod tests {
             xml,
             build_policy_xml(&["a.exe".to_owned(), "b.exe".to_owned()], &[])
         );
-        assert!(xml.contains(&rule_id(0)) && xml.contains(&rule_id(2)));
+        // Правило администратора плюс по одному разрешению на каждый
+        // доверенный каталог для каждого файла.
+        let expected = 1 + 2 * ALLOWED_ROOTS.len();
+        assert!(xml.contains(&rule_id(0)) && xml.contains(&rule_id(expected - 1)));
+        assert!(!xml.contains(&rule_id(expected)));
     }
 
     #[test]

@@ -40,6 +40,14 @@ fn run_winget(args: &[&str]) -> Result<String> {
     Ok(stdout)
 }
 
+/// Область установки управляемых приложений.
+///
+/// Только машинная: приложение, установленное в профиль пользователя, лежит
+/// в каталоге, доступном ему на запись, и потому не может быть разрешено
+/// политикой (ADR-0017). Ставить его туда означало бы установить программу,
+/// которую политика затем не запустит.
+const MACHINE_SCOPE: &[&str] = &["--scope", "machine"];
+
 /// Установленная версия пакета, если он есть на устройстве.
 pub fn installed_version(package_id: &str) -> Result<Option<String>> {
     let mut args = vec!["list", "--id", package_id];
@@ -75,6 +83,7 @@ pub fn install(package_id: &str, version: Option<&str>) -> Result<()> {
     let mut args = vec!["install", "--id", package_id];
     args.extend_from_slice(COMMON_ARGS);
     args.extend_from_slice(&["--silent", "--accept-package-agreements"]);
+    args.extend_from_slice(MACHINE_SCOPE);
     if let Some(version) = version {
         args.extend_from_slice(&["--version", version]);
     }
@@ -86,6 +95,7 @@ pub fn upgrade(package_id: &str, version: Option<&str>) -> Result<()> {
     let mut args = vec!["upgrade", "--id", package_id];
     args.extend_from_slice(COMMON_ARGS);
     args.extend_from_slice(&["--silent", "--accept-package-agreements"]);
+    args.extend_from_slice(MACHINE_SCOPE);
     if let Some(version) = version {
         args.extend_from_slice(&["--version", version]);
     }
