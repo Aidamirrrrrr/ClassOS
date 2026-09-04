@@ -42,6 +42,7 @@ docs/
 │
 └── specs/                                 ← ЧТО именно реализовать, milestone за milestone
     ├── BACKLOG.md                         статус всех milestone'ов T0–T8+
+    ├── RUNTIME_ACCEPTANCE.md              чеклист приёмки на реальном оборудовании
     ├── README-T0.md                       реализация и отложенная runtime-проверка T0
     ├── README-T1.md                       текущий отчёт реализации T1
     ├── README-T2.md                       текущий отчёт реализации T2
