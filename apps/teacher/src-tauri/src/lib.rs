@@ -721,10 +721,20 @@ async fn start_stream(
                     }
                     received = connection.recv() => {
                         let message = received.map_err(|error| error.to_string())?.ok_or_else(|| "устройство закрыло stream".to_owned())?;
-                        if let Some(protocol::network::envelope::Payload::ScreenFrame(frame)) = message.payload {
-                            let sequence = frame.sequence;
-                            store_frame(&frames, task_device_id.clone(), frame.encoded_data);
-                            let _ = app.emit("stream-frame-ready", FrameReady { device_id: task_device_id.clone(), sequence });
+                        match message.payload {
+                            Some(protocol::network::envelope::Payload::ScreenFrame(frame)) => {
+                                let sequence = frame.sequence;
+                                store_frame(&frames, task_device_id.clone(), frame.encoded_data);
+                                let _ = app.emit("stream-frame-ready", FrameReady { device_id: task_device_id.clone(), sequence });
+                            }
+                            // Сбой захвата обязан дойти до преподавателя
+                            // словами (spec T2 §13.5): молча оставленная
+                            // застывшая картинка выглядит как работающий
+                            // поток и хуже честной ошибки.
+                            Some(protocol::network::envelope::Payload::CaptureError(error)) => {
+                                let _ = app.emit("stream-status", format!("{task_device_id}: не удалось получить экран ({}: {})", error.code, error.message));
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -744,6 +754,12 @@ fn stop_stream(state: State<'_, AppState>, device_id: String) {
         if let Some(cancellation) = streams.remove(&device_id) {
             cancellation.cancel();
         }
+    }
+    // Кадр удаляется вместе с потоком: показывать последний снимок
+    // остановленного устройства как живой экран нельзя (инвариант 7 —
+    // экраны эфемерны).
+    if let Ok(mut frames) = state.frames.lock() {
+        frames.remove(&device_id);
     }
 }
 

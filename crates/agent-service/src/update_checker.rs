@@ -146,6 +146,7 @@ fn stage(
 /// не должно хранить непроверенный исполняемый файл даже временно.
 pub async fn prepare_update(
     client: &reqwest::Client,
+    publisher: &[u8; 32],
     base_url: &str,
     channel: Channel,
     current_version: &str,
@@ -156,8 +157,7 @@ pub async fn prepare_update(
     };
     // Подпись проверяется до скачивания: качать сотню мегабайт по манифесту,
     // который заведомо будет отвергнут, незачем.
-    let publisher = updater::publisher_key()?;
-    if evaluate_manifest(&publisher, &manifest, current_version, channel)?
+    if evaluate_manifest(publisher, &manifest, current_version, channel)?
         == UpdateDecision::AlreadyCurrent
     {
         return Ok(None);
@@ -186,6 +186,20 @@ pub async fn run_update_checks(
         );
         return;
     }
+    // Ключ читается один раз при старте: сборка без ключа издателя не должна
+    // каждый час писать в журнал одну и ту же ошибку — она просто не
+    // обновляется.
+    let publisher = match updater::publisher_key() {
+        Ok(key) => key,
+        Err(error) => {
+            tracing::warn!(error = %error, event = "UPDATE_CHECK_DISABLED");
+            return;
+        }
+    };
+    // Провайдер rustls устанавливается и здесь: reqwest паникует при создании
+    // клиента без него, и полагаться на то, что кто-то сделал это раньше,
+    // означало бы неявную зависимость от порядка инициализации.
+    transport::install_crypto_provider();
     let client = match reqwest::Client::builder().build() {
         Ok(client) => client,
         Err(error) => {
@@ -207,7 +221,16 @@ pub async fn run_update_checks(
             _ = tick.tick() => {}
         }
 
-        match prepare_update(&client, &base_url, channel, current_version, &staging_dir).await {
+        match prepare_update(
+            &client,
+            &publisher,
+            &base_url,
+            channel,
+            current_version,
+            &staging_dir,
+        )
+        .await
+        {
             Ok(None) => tracing::debug!(event = "UPDATE_CHECK_NO_UPDATE"),
             Ok(Some((manifest_path, payload_path))) => {
                 tracing::info!(event = "UPDATE_STAGED", channel = channel.as_str());
@@ -281,5 +304,246 @@ mod tests {
         let (manifest, payload) = staged_paths(Path::new("/tmp/updates"));
         assert_eq!(manifest.parent(), payload.parent());
         assert_eq!(manifest.file_name().unwrap(), "manifest.json");
+    }
+
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Слушающий сокет и его адрес.
+    ///
+    /// Адрес нужен **до** формирования манифеста: манифест подписывает URL
+    /// файла, поэтому порт должен быть известен заранее.
+    async fn bind() -> (tokio::net::TcpListener, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        (listener, base_url)
+    }
+
+    /// Минимальный HTTP-сервер: префикс пути → тело ответа.
+    ///
+    /// Нужен, чтобы конвейер проверки обновлений действительно **исполнялся**
+    /// в тестах, а не только компилировался. Иначе первый настоящий запуск
+    /// этого пути произошёл бы на устройстве в школе.
+    fn serve(
+        listener: tokio::net::TcpListener,
+        routes: Vec<(&'static str, Vec<u8>)>,
+    ) -> tokio::task::JoinHandle<()> {
+        let routes = Arc::new(routes);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let routes = Arc::clone(&routes);
+                tokio::spawn(async move {
+                    let mut buffer = vec![0_u8; 8192];
+                    let read = stream.read(&mut buffer).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+                    let path = request.split_whitespace().nth(1).unwrap_or("/").to_owned();
+
+                    let body = routes
+                        .iter()
+                        .find(|(route, _)| path.starts_with(route))
+                        .map(|(_, body)| body.clone());
+                    let response = match body {
+                        Some(body) => {
+                            let mut head = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            )
+                            .into_bytes();
+                            head.extend_from_slice(&body);
+                            head
+                        }
+                        None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_vec(),
+                    };
+                    let _ = stream.write_all(&response).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        })
+    }
+
+    /// Манифест, подписанный ключом издателя, и сам публичный ключ.
+    fn signed_manifest(payload: &[u8], version: &str, url: &str) -> (String, [u8; 32]) {
+        use sha2::{Digest, Sha256};
+
+        let signing = ed25519_dalek::SigningKey::from_bytes(&[5_u8; 32]);
+        let mut manifest = UpdateManifest {
+            version: version.to_owned(),
+            url: url.to_owned(),
+            sha256: Sha256::digest(payload)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+            signature: [0_u8; 64],
+            minimum_supported_version: "0.1.0".to_owned(),
+            release_channel: Channel::Stable.as_str().to_owned(),
+        };
+        manifest.signature = updater::sign_manifest(&signing, &manifest);
+        (
+            serde_json::to_string(&manifest).unwrap(),
+            signing.verifying_key().to_bytes(),
+        )
+    }
+
+    /// Клиент для тестов. Провайдер обязателен: без него reqwest паникует —
+    /// ровно та ошибка, которую этот набор тестов и обязан ловить.
+    fn client() -> reqwest::Client {
+        transport::install_crypto_provider();
+        reqwest::Client::new()
+    }
+
+    fn staging_dir(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("classos-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        path
+    }
+
+    #[tokio::test]
+    async fn signed_update_is_downloaded_and_staged() {
+        let payload = b"classos-release-payload".to_vec();
+        let (listener, base_url) = bind().await;
+        let (manifest_json, publisher) =
+            signed_manifest(&payload, "0.3.0", &format!("{base_url}/payload.bin"));
+        let server = serve(
+            listener,
+            vec![
+                (
+                    "/v1/updates/check",
+                    format!(r#"{{"update":{manifest_json}}}"#).into_bytes(),
+                ),
+                ("/payload.bin", payload.clone()),
+            ],
+        );
+
+        let staging = staging_dir("update");
+        let staged = prepare_update(
+            &client(),
+            &publisher,
+            &base_url,
+            Channel::Stable,
+            "0.2.0",
+            &staging,
+        )
+        .await
+        .expect("проверка обновления");
+
+        let (manifest_path, payload_path) = staged.expect("обновление подготовлено");
+        assert_eq!(std::fs::read(&payload_path).unwrap(), payload);
+        assert!(
+            std::fs::read_to_string(&manifest_path)
+                .unwrap()
+                .contains("0.3.0")
+        );
+
+        let _ = std::fs::remove_dir_all(&staging);
+        server.abort();
+    }
+
+    /// Файл, не совпавший с манифестом, не должен оказаться на диске даже
+    /// временно (инвариант T8 §12.3).
+    #[tokio::test]
+    async fn tampered_payload_is_not_staged() {
+        let expected = b"classos-release-payload".to_vec();
+        let (listener, base_url) = bind().await;
+        let (manifest_json, publisher) =
+            signed_manifest(&expected, "0.3.0", &format!("{base_url}/payload.bin"));
+        let server = serve(
+            listener,
+            vec![
+                (
+                    "/v1/updates/check",
+                    format!(r#"{{"update":{manifest_json}}}"#).into_bytes(),
+                ),
+                ("/payload.bin", b"substituted".to_vec()),
+            ],
+        );
+
+        let staging = staging_dir("tampered");
+        let result = prepare_update(
+            &client(),
+            &publisher,
+            &base_url,
+            Channel::Stable,
+            "0.2.0",
+            &staging,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(UpdateCheckError::Rejected(
+                updater::UpdateError::HashMismatch
+            ))
+        ));
+        assert!(!staging.exists(), "staging-каталог не должен появиться");
+        server.abort();
+    }
+
+    /// Манифест чужого издателя отвергается до скачивания файла: качать
+    /// заведомо неприемлемое обновление незачем.
+    #[tokio::test]
+    async fn manifest_from_another_publisher_is_rejected_before_download() {
+        let payload = b"classos-release-payload".to_vec();
+        let (listener, base_url) = bind().await;
+        let (manifest_json, _) =
+            signed_manifest(&payload, "0.3.0", &format!("{base_url}/payload.bin"));
+        // Файл намеренно не публикуется: если проверка подписи выполняется в
+        // правильном порядке, до него дело не дойдёт.
+        let server = serve(
+            listener,
+            vec![(
+                "/v1/updates/check",
+                format!(r#"{{"update":{manifest_json}}}"#).into_bytes(),
+            )],
+        );
+
+        let staging = staging_dir("foreign");
+        let result = prepare_update(
+            &client(),
+            &[7_u8; 32],
+            &base_url,
+            Channel::Stable,
+            "0.2.0",
+            &staging,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(UpdateCheckError::Rejected(
+                updater::UpdateError::InvalidSignature | updater::UpdateError::InvalidPublisherKey
+            ))
+        ));
+        assert!(!staging.exists());
+        server.abort();
+    }
+
+    /// Пустой ответ Cloud — штатная ситуация, а не ошибка.
+    #[tokio::test]
+    async fn no_update_leaves_disk_untouched() {
+        let (listener, base_url) = bind().await;
+        let server = serve(
+            listener,
+            vec![("/v1/updates/check", br#"{"update":null}"#.to_vec())],
+        );
+
+        let staging = staging_dir("empty");
+        let staged = prepare_update(
+            &client(),
+            &[0_u8; 32],
+            &base_url,
+            Channel::Stable,
+            "0.2.0",
+            &staging,
+        )
+        .await
+        .expect("пустой ответ");
+
+        assert!(staged.is_none());
+        assert!(!staging.exists());
+        server.abort();
     }
 }

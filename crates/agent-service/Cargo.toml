@@ -36,3 +36,7 @@ transport = { version = "0.1.0", path = "../transport" }
 updater = { version = "0.1.0", path = "../updater" }
 uuid = { version = "1.26.0", features = ["v4"] }
 zeroize = "1.9.0"
+
+[dev-dependencies]
+ed25519-dalek = "3.0.0"
+sha2 = "0.11.0"

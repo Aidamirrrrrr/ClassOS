@@ -46,8 +46,16 @@ CREATE TABLE organization_users (
     organization_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     user_id         uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     branch_id       uuid REFERENCES branches(id) ON DELETE CASCADE,
-    role            text NOT NULL CHECK (role IN ('owner', 'admin', 'teacher')),
-    PRIMARY KEY (organization_id, user_id, COALESCE(branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
+    role            text NOT NULL CHECK (role IN ('owner', 'admin', 'teacher'))
+);
+
+-- Уникальность членства задаётся индексом, а не PRIMARY KEY: выражения в
+-- PRIMARY KEY PostgreSQL не допускает, а без COALESCE два членства с
+-- branch_id IS NULL считались бы разными (NULL не равен NULL).
+CREATE UNIQUE INDEX organization_users_scope ON organization_users (
+    organization_id,
+    user_id,
+    COALESCE(branch_id, '00000000-0000-0000-0000-000000000000'::uuid)
 );
 
 CREATE TABLE rooms (
