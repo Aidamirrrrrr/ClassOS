@@ -18,8 +18,9 @@ mod local_tests {
     use prost::Message;
 
     use super::{
-        CaptureRequest, Envelope, Frame, RemoteControlStart, RemoteControlStarted,
-        RemoteControlStop, RemoteControlStopped, envelope,
+        CaptureRequest, Envelope, Frame, LaunchApplication, LockScreen, OpenUrl,
+        RemoteControlStart, RemoteControlStarted, RemoteControlStop, RemoteControlStopped,
+        SessionCommand, ShowMessage, UnlockScreen, envelope, session_command,
     };
 
     #[test]
@@ -75,6 +76,36 @@ mod local_tests {
             let value = Envelope {
                 message_id: "remote-control-1".to_owned(),
                 payload: Some(payload),
+            };
+            assert_eq!(
+                Envelope::decode(value.encode_to_vec().as_slice()).unwrap(),
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn session_commands_round_trip() {
+        let bodies = [
+            session_command::Body::LockScreen(LockScreen {}),
+            session_command::Body::UnlockScreen(UnlockScreen {}),
+            session_command::Body::ShowMessage(ShowMessage {
+                text: "Внимание".to_owned(),
+            }),
+            session_command::Body::LaunchApplication(LaunchApplication {
+                application_id: "vscode".to_owned(),
+            }),
+            session_command::Body::OpenUrl(OpenUrl {
+                url: "https://example.edu".to_owned(),
+            }),
+        ];
+        for body in bodies {
+            let value = Envelope {
+                message_id: "session-command-1".to_owned(),
+                payload: Some(envelope::Payload::SessionCommand(SessionCommand {
+                    command_id: "command-1".to_owned(),
+                    body: Some(body),
+                })),
             };
             assert_eq!(
                 Envelope::decode(value.encode_to_vec().as_slice()).unwrap(),
@@ -231,6 +262,41 @@ pub mod network {
                 Envelope::decode(envelope.encode_to_vec().as_slice()).unwrap(),
                 envelope
             );
+        }
+
+        #[test]
+        fn command_round_trip_preserves_every_allowed_body() {
+            let bodies = [
+                command::Body::LockDevice(LockDevice {}),
+                command::Body::UnlockDevice(UnlockDevice {}),
+                command::Body::ShowMessage(ShowMessage {
+                    text: "Внимание".to_owned(),
+                }),
+                command::Body::LaunchApplication(LaunchApplication {
+                    application_id: "vscode".to_owned(),
+                }),
+                command::Body::OpenUrl(OpenUrl {
+                    url: "https://example.edu".to_owned(),
+                }),
+                command::Body::RestartDevice(RestartDevice {}),
+                command::Body::ShutdownDevice(ShutdownDevice {}),
+            ];
+            for body in bodies {
+                let envelope = Envelope {
+                    protocol_version: PROTOCOL_VERSION,
+                    message_id: "command-1".to_owned(),
+                    timestamp_ms: 42,
+                    payload: Some(envelope::Payload::Command(Command {
+                        command_id: "command-1".to_owned(),
+                        expires_at_unix_ms: 1_000,
+                        body: Some(body),
+                    })),
+                };
+                assert_eq!(
+                    Envelope::decode(envelope.encode_to_vec().as_slice()).unwrap(),
+                    envelope
+                );
+            }
         }
     }
 }

@@ -16,7 +16,7 @@
 | T3 — Continuous Streaming | spec-ready | in progress | not started | [T3_CONTINUOUS_STREAMING_SPEC.md](T3_CONTINUOUS_STREAMING_SPEC.md) |
 | T4 — Remote Control | spec-ready | in progress | not started | [T4_REMOTE_CONTROL_SPEC.md](T4_REMOTE_CONTROL_SPEC.md) |
 | — CHECKPOINT #1 demo (реальному преподавателю) | — | — | — | `product/03_EXECUTION_PLAN_90_DAYS.md` §15 |
-| T5 — Classroom Commands + Bulk Actions | spec-ready | not started | not started | [T5_CLASSROOM_COMMANDS_SPEC.md](T5_CLASSROOM_COMMANDS_SPEC.md) |
+| T5 — Classroom Commands + Bulk Actions | spec-ready | in progress | not started | [T5_CLASSROOM_COMMANDS_SPEC.md](T5_CLASSROOM_COMMANDS_SPEC.md) |
 | T6 — Policy Engine + Focus Mode | spec-ready | not started | not started | [T6_POLICY_ENGINE_FOCUS_MODE_SPEC.md](T6_POLICY_ENGINE_FOCUS_MODE_SPEC.md) |
 | — CHECKPOINT #2 demo | — | — | — | `product/03_EXECUTION_PLAN_90_DAYS.md` §22 |
 | T7 — Device Health & Software Management | spec-ready | not started | not started | [T7_DEVICE_HEALTH_SOFTWARE_SPEC.md](T7_DEVICE_HEALTH_SOFTWARE_SPEC.md) |

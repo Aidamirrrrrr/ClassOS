@@ -37,6 +37,8 @@ message Envelope {
     RemoteControlStop remote_control_stop = 24;
     RemoteControlStopped remote_control_stopped = 25;
     RemoteInputEvent remote_input_event = 26;
+    Command command = 27;
+    CommandResult command_result = 28;
   }
 }
 
@@ -161,6 +163,35 @@ message MouseButton {
 }
 message MouseWheel { int32 delta = 1; }
 message KeyEvent { uint32 virtual_key_code = 1; bool is_down = 2; }
+
+message Command {
+  string command_id = 1;
+  int64 expires_at_unix_ms = 2;
+  oneof body {
+    LockDevice lock_device = 10;
+    UnlockDevice unlock_device = 11;
+    ShowMessage show_message = 12;
+    LaunchApplication launch_application = 13;
+    OpenUrl open_url = 14;
+    RestartDevice restart_device = 15;
+    ShutdownDevice shutdown_device = 16;
+  }
+}
+
+message CommandResult {
+  string command_id = 1;
+  bool success = 2;
+  string error_code = 3;
+  string message = 4;
+}
+
+message LockDevice {}
+message UnlockDevice {}
+message ShowMessage { string text = 1; }
+message LaunchApplication { string application_id = 1; }
+message OpenUrl { string url = 1; }
+message RestartDevice {}
+message ShutdownDevice {}
 
 enum EnrollmentErrorCode {
   ENROLLMENT_ERROR_CODE_UNSPECIFIED = 0;

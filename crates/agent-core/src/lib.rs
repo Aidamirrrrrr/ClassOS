@@ -3,6 +3,7 @@
 //!
 //! Крейт собирается и тестируется на любой ОС без `windows-platform`.
 
+pub mod commands;
 pub mod config;
 pub mod domain;
 pub mod error;

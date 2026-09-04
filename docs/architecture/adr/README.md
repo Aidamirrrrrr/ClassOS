@@ -40,5 +40,6 @@ ADR фиксирует **необратимое или дорогое в раз�
 | [0010](0010-t1-device-key-storage.md) | Хранение закрытого ключа устройства в T1 | Accepted |
 | [0011](0011-t3-parameterized-local-capture.md) | Параметризованный захват кадра в локальном IPC T3 | Accepted |
 | [0012](0012-t4-remote-input-session-boundary.md) | Remote input выполняется только в Session Host | Accepted |
+| [0013](0013-t5-command-privilege-routing.md) | Classroom-команды проходят через границу привилегий | Accepted |
 
-Следующий свободный номер: **0013**.
+Следующий свободный номер: **0014**.

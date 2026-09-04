@@ -26,6 +26,8 @@ message Envelope {
     RemoteInputEvent remote_input_event = 22;
     RemoteControlStarted remote_control_started = 23;
     RemoteControlStopped remote_control_stopped = 24;
+    SessionCommand session_command = 25;
+    SessionCommandResult session_command_result = 26;
   }
 }
 
@@ -119,3 +121,29 @@ message MouseButton {
 }
 message MouseWheel { int32 delta = 1; }
 message KeyEvent { uint32 virtual_key_code = 1; bool is_down = 2; }
+
+// Типизированные user-session команды: Service уже проверил дедлайн, каталог
+// приложений и идемпотентность. Привилегированных действий здесь нет.
+message SessionCommand {
+  string command_id = 1;
+  oneof body {
+    LockScreen lock_screen = 10;
+    UnlockScreen unlock_screen = 11;
+    ShowMessage show_message = 12;
+    LaunchApplication launch_application = 13;
+    OpenUrl open_url = 14;
+  }
+}
+
+message SessionCommandResult {
+  string command_id = 1;
+  bool success = 2;
+  string error_code = 3;
+  string message = 4;
+}
+
+message LockScreen {}
+message UnlockScreen {}
+message ShowMessage { string text = 1; }
+message LaunchApplication { string application_id = 1; }
+message OpenUrl { string url = 1; }
