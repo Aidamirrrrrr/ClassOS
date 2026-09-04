@@ -2,7 +2,7 @@
 
 ClassOS — система управления компьютерными классами для IT-школ (замена Veyon + Windows classroom control + со временем lesson-aware orchestration layer). Полный контекст — в `docs/README.md`.
 
-**Статус проекта: автоматическая реализация T0 завершена, T1 в работе.** Runtime-приёмка T0 на постоянной Windows 11 машине отложена и учитывается отдельно. Спецификации milestone'ов T0–T8 готовы в `docs/specs/`. Не начинай или не меняй реализацию, пока не прочитал spec нужного milestone и `docs/architecture/01_TECHNICAL_ARCHITECTURE.md`.
+**Статус проекта: автоматическая реализация T0–T6 завершена, следующий milestone — T7.** Runtime-приёмка на реальной Windows 11 машине не проводилась ни для одного milestone и учитывается отдельно: T0 проверен только smoke-тестом в CI, а Windows enforcement T6 не выполнялся ни разу. Накопленный долг перечислен в `docs/specs/README-T<N>.md`. Спецификации milestone'ов T0–T8 готовы в `docs/specs/`. Не начинай или не меняй реализацию, пока не прочитал spec нужного milestone и `docs/architecture/01_TECHNICAL_ARCHITECTURE.md`.
 
 ## Обязательное чтение перед любой инженерной задачей
 

@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 async-trait = "0.1.92"
+policy-engine = { version = "0.1.0", path = "../policy-engine" }
 protocol = { version = "0.1.0", path = "../protocol" }
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.20"

@@ -31,3 +31,4 @@ protocol = { version = "0.1.0", path = "../../../crates/protocol" }
 sha2 = "0.11.0"
 tokio-util = { version = "0.7.19", features = ["rt"] }
 uuid = { version = "1.26.0", features = ["v4"] }
+policy-engine = { version = "0.1.0", path = "../../../crates/policy-engine" }

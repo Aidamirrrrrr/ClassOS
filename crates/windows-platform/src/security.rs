@@ -128,3 +128,39 @@ impl PipeSecurityDescriptor {
         }
     }
 }
+
+/// Запущен ли текущий процесс с правами локального администратора.
+///
+/// Используется break-glass: снятие политики обязано быть доступно только
+/// локальному администратору и никогда — по сети (spec T6 §9).
+pub fn current_process_is_elevated() -> Result<bool> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::Security::{TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = HANDLE::default();
+    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) }.map_err(|error| {
+        PlatformError::WindowsApi {
+            api: "OpenProcessToken",
+            source: error,
+        }
+    })?;
+
+    let mut elevation = TOKEN_ELEVATION::default();
+    let mut returned: u32 = 0;
+    let status = unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(std::ptr::from_mut(&mut elevation).cast::<c_void>()),
+            u32::try_from(std::mem::size_of::<TOKEN_ELEVATION>()).unwrap_or(0),
+            &mut returned,
+        )
+    };
+    let _ = unsafe { CloseHandle(token) };
+    status.map_err(|error| PlatformError::WindowsApi {
+        api: "GetTokenInformation",
+        source: error,
+    })?;
+    Ok(elevation.TokenIsElevated != 0)
+}

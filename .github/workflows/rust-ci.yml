@@ -55,6 +55,15 @@ jobs:
       - name: cargo build --release
         run: cargo build --workspace --release --target x86_64-pc-windows-msvc
 
+      # Backend Teacher Console — отдельный Cargo workspace, поэтому команды
+      # выше его не покрывают. Без этих шагов его Rust-код не проверялся бы
+      # нигде: CI фронтенда делает только tsc.
+      - name: cargo fmt --check (Teacher Console backend)
+        run: cargo fmt --manifest-path apps/teacher/src-tauri/Cargo.toml --all -- --check
+
+      - name: cargo clippy (Teacher Console backend)
+        run: cargo clippy --manifest-path apps/teacher/src-tauri/Cargo.toml --all-targets -- -D warnings
+
   service-smoke:
     name: windows-latest (service install/start smoke test)
     runs-on: windows-latest

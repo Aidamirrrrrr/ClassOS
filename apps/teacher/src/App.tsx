@@ -23,6 +23,9 @@ function App() {
   const [commandDeviceIds, setCommandDeviceIds] = useState<string[]>([]);
 
   const device = devices.find((value) => value.device_id === selectedDeviceId) ?? null;
+  // Политика урока по умолчанию применяется ко всему классу: выбор отдельных
+  // устройств — уточнение, а не обязательный шаг (T6 DoD §2).
+  const policyTargets = commandDeviceIds.length > 0 ? commandDeviceIds : devices.map((value) => value.device_id);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -187,6 +190,17 @@ function App() {
       <button onClick={() => void runCommand("lock", "", commandDeviceIds)} disabled={commandDeviceIds.length === 0}>Заблокировать выбранных</button>
       <button onClick={() => void runCommand("unlock", "", commandDeviceIds)} disabled={commandDeviceIds.length === 0}>Разблокировать выбранных</button>
       {code && <p className="code">Код: <strong>{code.code}</strong></p>}
+    </section>
+    <section className="panel" aria-label="Политика урока">
+      <h2>Урок</h2>
+      <p className="subtitle">{policyTargets.length > 0
+        ? `Действует на устройств: ${policyTargets.length}`
+        : "Нет устройств"}</p>
+      <button onClick={() => void runCommand("policy", "python", policyTargets)} disabled={policyTargets.length === 0}>Python</button>
+      <button onClick={() => void runCommand("policy", "web", policyTargets)} disabled={policyTargets.length === 0}>Web</button>
+      <button onClick={() => void runCommand("focus", "vscode", policyTargets)} disabled={policyTargets.length === 0}>Focus Mode</button>
+      <button onClick={() => void runCommand("focus_off", "", policyTargets)} disabled={policyTargets.length === 0}>Выключить Focus</button>
+      <button onClick={() => void runCommand("policy_off", "", policyTargets)} disabled={policyTargets.length === 0}>Снять политику</button>
     </section>
     {devices.length > 0 && <section className="grid" aria-label="Экраны устройств">
       {devices.map((value) => <article className={`device-card ${value.device_id === selectedDeviceId ? "selected" : ""}`} key={value.device_id} onClick={() => setSelectedDeviceId(value.device_id)}>

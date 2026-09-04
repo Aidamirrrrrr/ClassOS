@@ -13,6 +13,7 @@ name = "agent-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "policy-engine",
  "protocol",
  "serde",
  "thiserror 2.0.20",
@@ -67,6 +68,7 @@ name = "appsteacher"
 version = "0.1.0"
 dependencies = [
  "agent-core",
+ "policy-engine",
  "protocol",
  "serde",
  "serde_json",
@@ -2888,6 +2890,16 @@ dependencies = [
  "fdeflate",
  "flate2",
  "miniz_oxide 0.8.9",
+]
+
+[[package]]
+name = "policy-engine"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "toml 1.1.5+spec-1.1.0",
 ]
 
 [[package]]

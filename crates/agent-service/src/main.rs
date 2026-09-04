@@ -7,6 +7,10 @@ mod identity_store;
 #[cfg(windows)]
 mod ipc;
 #[cfg(windows)]
+mod policy_controller;
+#[cfg(windows)]
+mod policy_provider;
+#[cfg(windows)]
 mod runtime;
 #[cfg(windows)]
 mod service;
@@ -58,10 +62,32 @@ fn main() {
             println!("Enrollment-код сохранён.");
         }
         Command::RecoverPolicy => {
-            // Команда доступна только локально; сеть и Teacher Console не
-            // имеют маршрута к break-glass. Реальное снятие provider-политики
-            // подключается вместе с Windows enforcement в следующем срезе T6.
-            eprintln!("ClassOS Recovery: активная provider-политика ещё не настроена.");
+            // Команда доступна только локально: сетевого маршрута к break-glass
+            // не существует (spec T6 §9). Права проверяются явно, чтобы
+            // сообщение было понятным, а не "отказано в доступе" из реестра.
+            match windows_platform::security::current_process_is_elevated() {
+                Ok(true) => {}
+                Ok(false) => {
+                    eprintln!(
+                        "ClassOS Recovery: требуются права локального администратора. \
+Запустите команду из консоли, открытой от имени администратора."
+                    );
+                    std::process::exit(1);
+                }
+                Err(err) => {
+                    eprintln!("не удалось проверить права: {err}");
+                    std::process::exit(1);
+                }
+            }
+            match policy_controller::break_glass_locally() {
+                Ok(()) => println!(
+                    "ClassOS Recovery: активная политика снята, устройство возвращено в исходное состояние."
+                ),
+                Err(err) => {
+                    eprintln!("ClassOS Recovery: не удалось снять политику: {err}");
+                    std::process::exit(1);
+                }
+            }
         }
     }
 }

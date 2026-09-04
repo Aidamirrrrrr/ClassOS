@@ -57,6 +57,28 @@ pub fn teacher_issuer_key_path() -> PathBuf {
         .join("teacher-issuer-public-key.bin")
 }
 
+/// Путь к сохранённому состоянию политики T6.
+pub fn policy_state_path() -> PathBuf {
+    PathBuf::from(PROGRAM_DATA_DIR)
+        .join("state")
+        .join("policy.toml")
+}
+
+/// Каталог снимков состояния устройства до применения политики.
+///
+/// Снимки обязаны переживать перезагрузку: без них откат после сбоя Service
+/// оставил бы устройство заблокированным (ADR-0014).
+pub fn policy_snapshot_dir() -> PathBuf {
+    PathBuf::from(PROGRAM_DATA_DIR)
+        .join("state")
+        .join("policy-snapshots")
+}
+
+/// Рабочий каталог для XML-файлов политики, передаваемых в AppLocker.
+pub fn policy_workspace_dir() -> PathBuf {
+    PathBuf::from(PROGRAM_DATA_DIR).join("state").join("policy")
+}
+
 /// Каталог журналов.
 pub fn log_dir() -> PathBuf {
     PathBuf::from(PROGRAM_DATA_DIR).join("logs")

@@ -31,6 +31,7 @@ use windows_service::service::{
 use windows_service::service_control_handler::ServiceStatusHandle;
 
 use crate::ipc::PipeConnection;
+use crate::policy_controller::PolicyController;
 use crate::windows_adapters::{
     LaunchMode, WindowsProcessLauncher, WindowsSessionProvider, default_session_host_path,
     user_sid_for_session,
@@ -76,6 +77,10 @@ struct CaptureBroker {
     current: std::sync::Mutex<Option<(u32, mpsc::UnboundedSender<ConnectionCommand>)>>,
     remote_owner: std::sync::Mutex<agent_core::remote::RemoteControlSession>,
     command_cache: std::sync::Mutex<CommandDeduplicator>,
+    /// `None`, если policy-подсистема не поднялась. Служба при этом продолжает
+    /// работать: урок не должен останавливаться из-за недоступного enforcement,
+    /// но и делать вид, что политика применена, она не будет.
+    policy: Option<PolicyController>,
 }
 
 impl CaptureBroker {
@@ -313,6 +318,16 @@ fn command_result(
     }
 }
 
+/// Честный отказ вместо видимости применённой политики (ADR-0014).
+fn policy_unavailable(command_id: String) -> protocol::network::CommandResult {
+    command_result(
+        command_id,
+        false,
+        "POLICY_UNSUPPORTED",
+        "policy enforcement недоступен на этом устройстве",
+    )
+}
+
 async fn execute_classroom_command(
     command: protocol::network::Command,
     capture_broker: &CaptureBroker,
@@ -388,20 +403,80 @@ async fn execute_classroom_command(
             };
         }
         // Policy-команды T6 исполняет сам Service: они привилегированные и не
-        // имеют маршрута в пользовательскую сессию. До подключения Windows
-        // enforcement отвечаем явным отказом, а не молчаливым успехом.
-        Some(
-            NetworkBody::ApplyPolicy(_)
-            | NetworkBody::RollbackPolicy(_)
-            | NetworkBody::FocusModeEnable(_)
-            | NetworkBody::FocusModeDisable(_),
-        ) => {
-            return command_result(
-                command_id,
-                false,
-                "POLICY_NOT_CONFIGURED",
-                "policy enforcement ещё не подключён на этом устройстве",
-            );
+        // имеют маршрута в пользовательскую сессию (ADR-0013).
+        Some(NetworkBody::ApplyPolicy(request)) => {
+            let Some(policy) = &capture_broker.policy else {
+                return policy_unavailable(command_id);
+            };
+            return match policy.apply_lesson(request.compiled_policy).await {
+                Ok(outcome) => {
+                    tracing::info!(
+                        event = "POLICY_APPLIED",
+                        policy_id = request.policy_id,
+                        policy_name = outcome.policy_name,
+                        snapshot_id = outcome.snapshot_id,
+                    );
+                    command_result(command_id, true, "", outcome.policy_name)
+                }
+                Err(error) => {
+                    tracing::warn!(event = "POLICY_APPLY_FAILED", error = %error);
+                    command_result(command_id, false, error.code(), error.to_string())
+                }
+            };
+        }
+        Some(NetworkBody::RollbackPolicy(request)) => {
+            let Some(policy) = &capture_broker.policy else {
+                return policy_unavailable(command_id);
+            };
+            return match policy.rollback(request.snapshot_id.clone()).await {
+                Ok(_) => {
+                    tracing::info!(
+                        event = "POLICY_ROLLED_BACK",
+                        snapshot_id = request.snapshot_id
+                    );
+                    command_result(command_id, true, "", "политика снята")
+                }
+                Err(error) => {
+                    tracing::warn!(event = "POLICY_ROLLBACK_FAILED", error = %error);
+                    command_result(command_id, false, error.code(), error.to_string())
+                }
+            };
+        }
+        Some(NetworkBody::FocusModeEnable(request)) => {
+            let Some(policy) = &capture_broker.policy else {
+                return policy_unavailable(command_id);
+            };
+            return match policy.enable_focus(request.allowed_application_ids).await {
+                Ok(outcome) => {
+                    tracing::info!(
+                        event = "FOCUS_MODE_ENABLED",
+                        policy_name = outcome.policy_name
+                    );
+                    command_result(command_id, true, "", "Focus Mode включён")
+                }
+                Err(error) => {
+                    tracing::warn!(event = "FOCUS_MODE_FAILED", error = %error);
+                    command_result(command_id, false, error.code(), error.to_string())
+                }
+            };
+        }
+        Some(NetworkBody::FocusModeDisable(_)) => {
+            let Some(policy) = &capture_broker.policy else {
+                return policy_unavailable(command_id);
+            };
+            return match policy.disable_focus().await {
+                Ok(outcome) => {
+                    tracing::info!(
+                        event = "FOCUS_MODE_DISABLED",
+                        policy_name = outcome.policy_name
+                    );
+                    command_result(command_id, true, "", "Focus Mode выключен")
+                }
+                Err(error) => {
+                    tracing::warn!(event = "FOCUS_MODE_FAILED", error = %error);
+                    command_result(command_id, false, error.code(), error.to_string())
+                }
+            };
         }
         None => {
             return command_result(
@@ -799,7 +874,17 @@ pub async fn run(
     let mut supervisor: Supervisor = SessionSupervisor::new(provider, launcher, spec);
     let service_instance_id = agent_core::config::new_service_instance_id().to_string();
     let network_cancellation = CancellationToken::new();
-    let capture_broker = Arc::new(CaptureBroker::default());
+    let policy = match PolicyController::load() {
+        Ok(controller) => Some(controller),
+        Err(error) => {
+            tracing::warn!(error = %error, event = "POLICY_SUBSYSTEM_UNAVAILABLE");
+            None
+        }
+    };
+    let capture_broker = Arc::new(CaptureBroker {
+        policy,
+        ..CaptureBroker::default()
+    });
     match agent_core::config::load_or_create_device_id(&agent_core::config::device_id_path()) {
         Ok(device_id) => {
             match crate::identity_store::load_or_create(

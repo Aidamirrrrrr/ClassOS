@@ -1,7 +1,7 @@
 # ClassOS T2 — одиночный снимок экрана
 
-Статус: **реализация в процессе; контракт и тестовый pipeline готовы, DXGI и
-реальный capture ещё не проверялись на Windows/GPU.**
+Статус по `docs/specs/BACKLOG.md`: **код завершён и проходит автоматические
+проверки; DXGI и реальный capture ни разу не выполнялись на Windows/GPU.**
 
 ## Уже реализовано
 
@@ -13,13 +13,16 @@
 - protobuf-сообщения `ScreenshotRequest`, `ScreenFrame` для T1-канала;
 - encode/decode и JPEG round-trip unit-тесты.
 
-## Следующие шаги
+## Реализовано дополнительно
 
-1. Реализовать DXGI Desktop Duplication за `ScreenCapture` в Session Host.
-2. Протянуть `CaptureRequest` через T0 IPC и `ScreenFrame` через Service.
-3. Добавить кнопку снимка и отображение JPEG в Teacher Console.
-4. Провести обязательную приёмку на Intel/AMD/NVIDIA, 1080p/4K и двух
-   мониторах.
+- DXGI Desktop Duplication за `ScreenCapture` в Session Host;
+- `CaptureRequest` через T0 IPC и `ScreenFrame` через Service;
+- кнопка снимка и отображение JPEG в Teacher Console.
+
+## Осталось
+
+Обязательная приёмка на Intel/AMD/NVIDIA, 1080p/4K и двух мониторах — не
+выполнялась.
 
 Кадры по умолчанию живут только в памяти: capture → encode → отправка →
 discard. Debug-dump на диск в T2 не добавляется.

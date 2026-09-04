@@ -482,9 +482,69 @@ fn stop_stream(state: State<'_, AppState>, device_id: String) {
     }
 }
 
+/// Профили урока, которые преподаватель видит как кнопки.
+///
+/// Teacher Console оперирует только продуктовыми понятиями: имя профиля и
+/// идентификаторы приложений. Ни AppLocker, ни registry, ни SID сюда не
+/// попадают — это инвариант X (`CLAUDE.md`), а не вопрос вкуса.
+fn lesson_profile(profile_id: &str) -> Option<policy_engine::LessonPolicy> {
+    let build = |name: &str, applications: &[&str], urls: &[&str]| policy_engine::LessonPolicy {
+        name: name.to_owned(),
+        allowed_applications: applications.iter().map(|v| (*v).to_owned()).collect(),
+        allowed_urls: urls.iter().map(|v| (*v).to_owned()).collect(),
+        block_settings: true,
+        block_powershell: true,
+        block_cmd: true,
+        block_store: true,
+        block_personalization: true,
+        restrict_to_allowed: false,
+    };
+    match profile_id {
+        "python" => Some(build(
+            "Python",
+            &["vscode", "python", "chrome"],
+            &["docs.python.org", "github.com"],
+        )),
+        "web" => Some(build(
+            "Web",
+            &["vscode", "chrome"],
+            &["developer.mozilla.org", "github.com"],
+        )),
+        _ => None,
+    }
+}
+
 fn command_body(kind: &str, value: &str) -> Result<protocol::network::command::Body, String> {
     use protocol::network::command::Body;
     match kind {
+        "policy" => {
+            let profile =
+                lesson_profile(value).ok_or_else(|| "неизвестный профиль урока".to_owned())?;
+            let document = policy_engine::PolicyDocument::new(profile)
+                .encode()
+                .map_err(|error| error.to_string())?;
+            Ok(Body::ApplyPolicy(protocol::network::ApplyPolicy {
+                policy_id: value.to_owned(),
+                compiled_policy: document,
+            }))
+        }
+        // Пустой snapshot_id означает "снять активную политику устройства":
+        // Teacher Console не хранит и не должна знать идентификаторы снимков.
+        "policy_off" => Ok(Body::RollbackPolicy(protocol::network::RollbackPolicy {
+            snapshot_id: String::new(),
+        })),
+        "focus" if !value.is_empty() => {
+            Ok(Body::FocusModeEnable(protocol::network::FocusModeEnable {
+                allowed_application_ids: value
+                    .split(',')
+                    .map(|id| id.trim().to_owned())
+                    .filter(|id| !id.is_empty())
+                    .collect(),
+            }))
+        }
+        "focus_off" => Ok(Body::FocusModeDisable(
+            protocol::network::FocusModeDisable {},
+        )),
         "lock" => Ok(Body::LockDevice(protocol::network::LockDevice {})),
         "unlock" => Ok(Body::UnlockDevice(protocol::network::UnlockDevice {})),
         "message" if !value.is_empty() => Ok(Body::ShowMessage(protocol::network::ShowMessage {
