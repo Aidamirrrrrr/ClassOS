@@ -549,4 +549,41 @@ mod tests {
         }
         assert_eq!(Channel::parse("nightly"), None);
     }
+
+    /// Кросс-языковой контракт с Cloud (spec T8 §8.2, ADR-0015).
+    ///
+    /// Тот же seed, тот же манифест и та же подпись закреплены в
+    /// `services/cloud/test/manifest.test.ts`. Если одна сторона изменит
+    /// кодирование полей, разойдутся оба теста, а не установка обновления на
+    /// реальном устройстве.
+    #[test]
+    fn manifest_signed_by_cloud_is_accepted() {
+        let seed = [5_u8; 32];
+        let publisher = ed25519_dalek::SigningKey::from_bytes(&seed)
+            .verifying_key()
+            .to_bytes();
+
+        let signature_hex = concat!(
+            "c7a1d1140cc36b3724c4e0826d64ff0acaffeffc37accf91245f8c1e7d597b31",
+            "541f036adecfeab3351555476884f3f2efa873c6d11d9e6787a1dda67fb53c0d",
+        );
+        let mut signature = [0_u8; 64];
+        for (index, slot) in signature.iter_mut().enumerate() {
+            *slot = u8::from_str_radix(&signature_hex[index * 2..index * 2 + 2], 16).unwrap();
+        }
+
+        let manifest = UpdateManifest {
+            version: "0.3.0".to_owned(),
+            url: "https://updates.example.org/classos-0.3.0.bin".to_owned(),
+            sha256: "0f".repeat(32),
+            signature,
+            minimum_supported_version: "0.1.0".to_owned(),
+            release_channel: "stable".to_owned(),
+        };
+
+        assert_eq!(
+            evaluate_manifest(&publisher, &manifest, "0.2.0", Channel::Stable),
+            Ok(UpdateDecision::Apply)
+        );
+    }
 }
