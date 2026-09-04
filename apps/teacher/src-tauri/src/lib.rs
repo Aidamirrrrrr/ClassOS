@@ -368,9 +368,20 @@ fn stop_remote_control(state: State<'_, AppState>, device_id: String) {
 
 #[tauri::command]
 fn send_remote_mouse_move(state: State<'_, AppState>, device_id: String, x: f32, y: f32) -> Result<(), String> {
-    let handle = state.remote_controls.lock().map_err(|_| "состояние занято")?.get(&device_id).map(|value| value.sender.clone()).ok_or_else(|| "remote control не активен".to_owned())?;
-    handle.send(Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: format!("input-{}", now_ms()), timestamp_ms: now_ms(), payload: Some(envelope::Payload::RemoteInputEvent(protocol::network::RemoteInputEvent { device_id, event: Some(protocol::network::remote_input_event::Event::MouseMove(protocol::network::MouseMove { x, y })) })) }).map_err(|_| "control-соединение закрыто".to_owned())
+    send_remote_event(&state, device_id, protocol::network::remote_input_event::Event::MouseMove(protocol::network::MouseMove { x, y }))
 }
+
+fn send_remote_event(state: &AppState, device_id: String, event: protocol::network::remote_input_event::Event) -> Result<(), String> {
+    let handle = state.remote_controls.lock().map_err(|_| "состояние занято")?.get(&device_id).map(|value| value.sender.clone()).ok_or_else(|| "remote control не активен".to_owned())?;
+    handle.send(Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: format!("input-{}", now_ms()), timestamp_ms: now_ms(), payload: Some(envelope::Payload::RemoteInputEvent(protocol::network::RemoteInputEvent { device_id, event: Some(event) })) }).map_err(|_| "control-соединение закрыто".to_owned())
+}
+
+#[tauri::command]
+fn send_remote_mouse_button(state: State<'_, AppState>, device_id: String, button: i32, is_down: bool, x: f32, y: f32) -> Result<(), String> { send_remote_event(&state, device_id, protocol::network::remote_input_event::Event::MouseButton(protocol::network::MouseButton { button, is_down, x, y })) }
+#[tauri::command]
+fn send_remote_wheel(state: State<'_, AppState>, device_id: String, delta: i32) -> Result<(), String> { send_remote_event(&state, device_id, protocol::network::remote_input_event::Event::MouseWheel(protocol::network::MouseWheel { delta })) }
+#[tauri::command]
+fn send_remote_key(state: State<'_, AppState>, device_id: String, virtual_key_code: u32, is_down: bool) -> Result<(), String> { send_remote_event(&state, device_id, protocol::network::remote_input_event::Event::KeyEvent(protocol::network::KeyEvent { virtual_key_code, is_down })) }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -413,7 +424,10 @@ pub fn run() {
             stop_stream,
             start_remote_control,
             stop_remote_control,
-            send_remote_mouse_move
+            send_remote_mouse_move,
+            send_remote_mouse_button,
+            send_remote_wheel,
+            send_remote_key
         ])
         .run(tauri::generate_context!())
         .expect("не удалось запустить Teacher Console");

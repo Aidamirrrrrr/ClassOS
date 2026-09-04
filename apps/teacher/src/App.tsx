@@ -121,6 +121,21 @@ function App() {
     void invoke("send_remote_mouse_move", { deviceId: device.device_id, x, y });
   }
 
+  function clickPointer(event: React.PointerEvent<HTMLImageElement>) {
+    if (!device || controllingDeviceId !== device.device_id) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    const y = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+    void invoke("send_remote_mouse_button", { deviceId: device.device_id, button: event.button, isDown: true, x, y });
+    void invoke("send_remote_mouse_button", { deviceId: device.device_id, button: event.button, isDown: false, x, y });
+  }
+
+  function wheelPointer(event: React.WheelEvent<HTMLImageElement>) {
+    if (!device || controllingDeviceId !== device.device_id) return;
+    event.preventDefault();
+    void invoke("send_remote_wheel", { deviceId: device.device_id, delta: Math.round(-event.deltaY) });
+  }
+
   return <main className="container">
     <h1>ClassOS Teacher Console</h1>
     <p className="subtitle">Обнаружение, enrollment и live screen stream</p>
@@ -147,7 +162,7 @@ function App() {
       <button onClick={() => stopStream(device.device_id)}>Остановить поток</button>
       <button onClick={takeControl} disabled={controllingDeviceId === device.device_id}>Взять управление</button>
       <button onClick={stopControl} disabled={controllingDeviceId !== device.device_id}>Остановить управление</button>
-      {frameUrls[device.device_id] && <img className="screenshot" src={frameUrls[device.device_id]} onPointerMove={movePointer} alt="Снимок экрана устройства" />}
+      {frameUrls[device.device_id] && <img className="screenshot" src={frameUrls[device.device_id]} onPointerMove={movePointer} onPointerDown={clickPointer} onWheel={wheelPointer} alt="Снимок экрана устройства" />}
     </section>}
     <p className="status">{message}</p>
   </main>;
