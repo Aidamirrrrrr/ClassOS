@@ -20,6 +20,7 @@ function App() {
   const [enrollmentCode, setEnrollmentCode] = useState("");
   const [frameUrls, setFrameUrls] = useState<Record<string, string>>({});
   const [controllingDeviceId, setControllingDeviceId] = useState<string | null>(null);
+  const [commandDeviceIds, setCommandDeviceIds] = useState<string[]>([]);
 
   const device = devices.find((value) => value.device_id === selectedDeviceId) ?? null;
 
@@ -128,6 +129,16 @@ function App() {
     } catch (error) { setMessage(String(error)); }
   }
 
+  function toggleCommandDevice(deviceId: string) {
+    setCommandDeviceIds((current) => current.includes(deviceId)
+      ? current.filter((value) => value !== deviceId)
+      : [...current, deviceId]);
+  }
+
+  function selectAllCommandDevices() {
+    setCommandDeviceIds((current) => current.length === devices.length ? [] : devices.map((value) => value.device_id));
+  }
+
   async function takeControl() {
     if (!device) return;
     try { await invoke("start_remote_control", { deviceId: device.device_id }); setControllingDeviceId(device.device_id); setMessage("Remote control активен"); }
@@ -172,16 +183,18 @@ function App() {
       <button onClick={discover}>Найти устройство</button>
       <button onClick={createCode}>Создать enrollment-код</button>
       <button onClick={startGrid} disabled={devices.length === 0}>Запустить grid</button>
-      <button onClick={() => void runCommand("lock", "", devices.map((value) => value.device_id))} disabled={devices.length === 0}>Заблокировать всех</button>
-      <button onClick={() => void runCommand("unlock", "", devices.map((value) => value.device_id))} disabled={devices.length === 0}>Разблокировать всех</button>
+      <button onClick={selectAllCommandDevices} disabled={devices.length === 0}>{commandDeviceIds.length === devices.length ? "Снять выбор" : "Выбрать всех"}</button>
+      <button onClick={() => void runCommand("lock", "", commandDeviceIds)} disabled={commandDeviceIds.length === 0}>Заблокировать выбранных</button>
+      <button onClick={() => void runCommand("unlock", "", commandDeviceIds)} disabled={commandDeviceIds.length === 0}>Разблокировать выбранных</button>
       {code && <p className="code">Код: <strong>{code.code}</strong></p>}
     </section>
     {devices.length > 0 && <section className="grid" aria-label="Экраны устройств">
-      {devices.map((value) => <button className={`device-card ${value.device_id === selectedDeviceId ? "selected" : ""}`} key={value.device_id} onClick={() => setSelectedDeviceId(value.device_id)}>
+      {devices.map((value) => <article className={`device-card ${value.device_id === selectedDeviceId ? "selected" : ""}`} key={value.device_id} onClick={() => setSelectedDeviceId(value.device_id)}>
+        <label className="device-select" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={commandDeviceIds.includes(value.device_id)} onChange={() => toggleCommandDevice(value.device_id)} /> Выбрать для команд</label>
         <strong>{value.hostname}</strong>
         <small>{value.ip}:{value.control_port}</small>
         {frameUrls[value.device_id] ? <img className="thumbnail" src={frameUrls[value.device_id]} alt={`Экран ${value.hostname}`} /> : <span>Нет кадра</span>}
-      </button>)}
+      </article>)}
     </section>}
     {device && <section className="panel">
       <h2>{device.hostname}</h2>

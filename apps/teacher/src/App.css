@@ -14,4 +14,6 @@ input { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; pa
 .device-card { display: grid; gap: 7px; min-height: 160px; margin: 0; padding: 14px; color: #172033; text-align: left; background: white; box-shadow: 0 4px 18px #17203312; }
 .device-card.selected { outline: 3px solid #93c5fd; }
 .device-card small { color: #5f6b7a; }
+.device-select { margin: 0; color: #334155; cursor: pointer; }
+.device-select input { display: inline; width: auto; margin: 0 6px 0 0; }
 .thumbnail { width: 100%; min-height: 96px; object-fit: contain; background: #111827; border-radius: 6px; }
