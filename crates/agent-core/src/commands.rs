@@ -7,6 +7,40 @@ use protocol::network::CommandResult;
 pub const COMMAND_CACHE_TTL_MS: i64 = 15 * 60 * 1000;
 const MAX_CACHED_COMMANDS: usize = 1_024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogApplication {
+    VsCode,
+    Chrome,
+    Python,
+}
+
+impl CatalogApplication {
+    pub fn executable(self) -> &'static str {
+        match self {
+            Self::VsCode => "Code.exe",
+            Self::Chrome => "chrome.exe",
+            Self::Python => "python.exe",
+        }
+    }
+}
+
+/// Catalog намеренно принимает только фиксированные идентификаторы, а не путь
+/// или командную строку, пришедшие от Teacher Console.
+pub fn catalog_application(application_id: &str) -> Option<CatalogApplication> {
+    match application_id {
+        "vscode" => Some(CatalogApplication::VsCode),
+        "chrome" => Some(CatalogApplication::Chrome),
+        "python" => Some(CatalogApplication::Python),
+        _ => None,
+    }
+}
+
+pub fn is_allowed_url(url: &str) -> bool {
+    (url.starts_with("https://") || url.starts_with("http://"))
+        && !url.chars().any(char::is_whitespace)
+        && url.len() <= 2_048
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandAdmission {
     Execute,
@@ -158,5 +192,23 @@ mod tests {
             cache.admit("command-1", 200, 102),
             CommandAdmission::Execute
         );
+    }
+
+    #[test]
+    fn catalog_never_resolves_arbitrary_executable_path() {
+        assert_eq!(
+            catalog_application("vscode"),
+            Some(CatalogApplication::VsCode)
+        );
+        assert_eq!(catalog_application("C:\\Windows\\System32\\cmd.exe"), None);
+        assert_eq!(catalog_application("powershell"), None);
+    }
+
+    #[test]
+    fn only_http_urls_are_allowed() {
+        assert!(is_allowed_url("https://classos.example/lesson"));
+        assert!(is_allowed_url("http://intranet.local"));
+        assert!(!is_allowed_url("file:///C:/secret.txt"));
+        assert!(!is_allowed_url("https://example.test/has space"));
     }
 }

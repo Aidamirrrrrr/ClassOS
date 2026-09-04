@@ -1,10 +1,15 @@
 //! Runtime Session Host: подключение, handshake, обработка Ping и
 //! GetSessionInfo, завершение по Shutdown или разрыву связи. Только Windows.
 
+use std::process::Command;
 use std::time::Duration;
 
+use agent_core::commands::{catalog_application, is_allowed_url};
 use protocol::envelope::Payload;
-use protocol::{CaptureError, Envelope, LOCAL_PROTOCOL_VERSION, Pong, SessionHello, SessionInfo};
+use protocol::{
+    CaptureError, Envelope, LOCAL_PROTOCOL_VERSION, Pong, SessionCommand, SessionCommandResult,
+    SessionHello, SessionInfo,
+};
 use remote_input::{
     MouseButton as InputMouseButton, RemoteInput, RemoteInputEvent as InputEvent, SendInputRemote,
     primary_display_size,
@@ -13,7 +18,9 @@ use screen_capture::{
     DxgiDesktopCapture, FrameEncoder, JpegEncoder, ScreenCapture, scale_to_max_width,
 };
 use uuid::Uuid;
+use windows_platform::classroom_ui::{LockOverlay, show_message};
 use windows_platform::indicator::StudentIndicator;
+use windows_platform::shell;
 
 use crate::ipc_client::IpcClient;
 
@@ -94,6 +101,74 @@ fn to_input_event(event: protocol::RemoteInputEvent) -> Result<InputEvent, &'sta
     }
 }
 
+fn session_command_result(
+    command_id: String,
+    result: Result<(), (&'static str, String)>,
+) -> SessionCommandResult {
+    match result {
+        Ok(()) => SessionCommandResult {
+            command_id,
+            success: true,
+            error_code: String::new(),
+            message: "команда выполнена".to_owned(),
+        },
+        Err((error_code, message)) => SessionCommandResult {
+            command_id,
+            success: false,
+            error_code: error_code.to_owned(),
+            message,
+        },
+    }
+}
+
+fn execute_session_command(
+    command: SessionCommand,
+    lock_overlay: &LockOverlay,
+) -> SessionCommandResult {
+    use protocol::session_command::Body;
+
+    let command_id = command.command_id.clone();
+    let result = match command.body {
+        Some(Body::LockScreen(_)) => lock_overlay
+            .show()
+            .map_err(|error| ("LOCK_OVERLAY_FAILED", error.to_string())),
+        Some(Body::UnlockScreen(_)) => {
+            lock_overlay.hide();
+            Ok(())
+        }
+        Some(Body::ShowMessage(message)) => {
+            show_message(&message.text).map_err(|error| ("MESSAGE_FAILED", error.to_string()))
+        }
+        Some(Body::LaunchApplication(application)) => {
+            let Some(application) = catalog_application(&application.application_id) else {
+                return session_command_result(
+                    command_id,
+                    Err((
+                        "APPLICATION_NOT_ALLOWED",
+                        "приложение отсутствует в локальном каталоге".to_owned(),
+                    )),
+                );
+            };
+            Command::new(application.executable())
+                .spawn()
+                .map(|_| ())
+                .map_err(|error| ("APPLICATION_LAUNCH_FAILED", error.to_string()))
+        }
+        Some(Body::OpenUrl(open_url)) if is_allowed_url(&open_url.url) => {
+            shell::open_url(&open_url.url).map_err(|error| ("URL_OPEN_FAILED", error.to_string()))
+        }
+        Some(Body::OpenUrl(_)) => Err((
+            "URL_NOT_ALLOWED",
+            "разрешены только HTTP и HTTPS URL без пробелов".to_owned(),
+        )),
+        None => Err((
+            "COMMAND_UNSUPPORTED",
+            "отсутствует поддерживаемое действие команды".to_owned(),
+        )),
+    };
+    session_command_result(command_id, result)
+}
+
 pub async fn run(session_id: u32, pipe_name: &str) -> std::io::Result<()> {
     let mut client = IpcClient::connect(pipe_name).await?;
 
@@ -127,6 +202,7 @@ pub async fn run(session_id: u32, pipe_name: &str) -> std::io::Result<()> {
     let mut remote_input = SendInputRemote::new();
     let mut remote_session: Option<String> = None;
     let indicator = StudentIndicator::default();
+    let lock_overlay = LockOverlay::default();
     loop {
         let recv_result = tokio::time::timeout(PARENT_DEATH_GRACE_PERIOD * 5, client.recv()).await;
 
@@ -271,6 +347,16 @@ pub async fn run(session_id: u32, pipe_name: &str) -> std::io::Result<()> {
                     }
                 }
             }
+            Some(Payload::SessionCommand(command)) => {
+                let result = execute_session_command(command, &lock_overlay);
+                let response = Envelope {
+                    message_id: new_message_id(),
+                    payload: Some(Payload::SessionCommandResult(result)),
+                };
+                if client.send(&response).await.is_err() {
+                    break;
+                }
+            }
             Some(Payload::Shutdown(_)) => {
                 if remote_session.take().is_some() {
                     indicator.hide();
@@ -279,6 +365,7 @@ pub async fn run(session_id: u32, pipe_name: &str) -> std::io::Result<()> {
                         reason = "service_shutdown"
                     );
                 }
+                lock_overlay.hide();
                 tracing::info!("received Shutdown, exiting");
                 break;
             }
@@ -296,6 +383,7 @@ pub async fn run(session_id: u32, pipe_name: &str) -> std::io::Result<()> {
             reason = "service_connection_closed"
         );
     }
+    lock_overlay.hide();
 
     Ok(())
 }

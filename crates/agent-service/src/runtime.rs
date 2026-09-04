@@ -10,11 +10,17 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use agent_core::commands::{
+    CommandAdmission, CommandDeduplicator, catalog_application, is_allowed_url,
+};
 use agent_core::domain::ProcessSpec;
 use agent_core::supervisor::{ServiceEvent, SessionSupervisor, SupervisorEvent};
 use agent_core::traits::SessionProcessLauncher;
 use protocol::envelope::Payload;
-use protocol::{Envelope, GetSessionInfo, LOCAL_PROTOCOL_VERSION, Ping, ServiceHello, Shutdown};
+use protocol::{
+    Envelope, GetSessionInfo, LOCAL_PROTOCOL_VERSION, Ping, ServiceHello, SessionCommand,
+    SessionCommandResult, Shutdown,
+};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
@@ -29,6 +35,7 @@ use crate::windows_adapters::{
     LaunchMode, WindowsProcessLauncher, WindowsSessionProvider, default_session_host_path,
     user_sid_for_session,
 };
+use windows_platform::power::{PowerAction, execute_power_action};
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(10);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
@@ -58,12 +65,17 @@ enum ConnectionCommand {
     RemoteInput {
         event: protocol::RemoteInputEvent,
     },
+    SessionCommand {
+        command: SessionCommand,
+        response: oneshot::Sender<Result<SessionCommandResult, protocol::CaptureError>>,
+    },
 }
 
 #[derive(Default)]
 struct CaptureBroker {
     current: std::sync::Mutex<Option<(u32, mpsc::UnboundedSender<ConnectionCommand>)>>,
     remote_owner: std::sync::Mutex<agent_core::remote::RemoteControlSession>,
+    command_cache: std::sync::Mutex<CommandDeduplicator>,
 }
 
 impl CaptureBroker {
@@ -211,6 +223,53 @@ impl CaptureBroker {
                 message: "Session Host недоступен".to_owned(),
             })
     }
+
+    fn admit_command(&self, command_id: &str, expires_at_unix_ms: i64) -> CommandAdmission {
+        self.command_cache
+            .lock()
+            .expect("command cache mutex poisoned")
+            .admit(command_id, expires_at_unix_ms, now_unix_ms())
+    }
+
+    fn complete_command(&self, command_id: &str, result: protocol::network::CommandResult) {
+        self.command_cache
+            .lock()
+            .expect("command cache mutex poisoned")
+            .complete(command_id, result, now_unix_ms());
+    }
+
+    async fn execute_session_command(
+        &self,
+        command: SessionCommand,
+    ) -> Result<SessionCommandResult, protocol::CaptureError> {
+        let sender = self
+            .current
+            .lock()
+            .expect("capture broker mutex poisoned")
+            .as_ref()
+            .map(|(_, sender)| sender.clone())
+            .ok_or_else(|| protocol::CaptureError {
+                code: "NO_INTERACTIVE_SESSION".to_owned(),
+                message: "нет активной пользовательской сессии".to_owned(),
+            })?;
+        let (response, receiver) = oneshot::channel();
+        sender
+            .send(ConnectionCommand::SessionCommand { command, response })
+            .map_err(|_| protocol::CaptureError {
+                code: "SESSION_HOST_DISCONNECTED".to_owned(),
+                message: "Session Host недоступен".to_owned(),
+            })?;
+        tokio::time::timeout(Duration::from_secs(3), receiver)
+            .await
+            .map_err(|_| protocol::CaptureError {
+                code: "COMMAND_TIMEOUT".to_owned(),
+                message: "Session Host не подтвердил команду".to_owned(),
+            })?
+            .map_err(|_| protocol::CaptureError {
+                code: "SESSION_HOST_DISCONNECTED".to_owned(),
+                message: "Session Host закрыл команду".to_owned(),
+            })?
+    }
 }
 
 fn to_local_remote_input(
@@ -238,6 +297,119 @@ fn to_local_remote_input(
         }),
     };
     Some(protocol::RemoteInputEvent { event: Some(event) })
+}
+
+fn command_result(
+    command_id: String,
+    success: bool,
+    error_code: impl Into<String>,
+    message: impl Into<String>,
+) -> protocol::network::CommandResult {
+    protocol::network::CommandResult {
+        command_id,
+        success,
+        error_code: error_code.into(),
+        message: message.into(),
+    }
+}
+
+async fn execute_classroom_command(
+    command: protocol::network::Command,
+    capture_broker: &CaptureBroker,
+) -> protocol::network::CommandResult {
+    use protocol::network::command::Body as NetworkBody;
+    use protocol::session_command::Body as SessionBody;
+
+    let command_id = command.command_id.clone();
+    let session_body = match command.body {
+        Some(NetworkBody::LockDevice(_)) => Some(SessionBody::LockScreen(protocol::LockScreen {})),
+        Some(NetworkBody::UnlockDevice(_)) => {
+            Some(SessionBody::UnlockScreen(protocol::UnlockScreen {}))
+        }
+        Some(NetworkBody::ShowMessage(message))
+            if !message.text.is_empty() && message.text.len() <= 1_000 =>
+        {
+            Some(SessionBody::ShowMessage(protocol::ShowMessage {
+                text: message.text,
+            }))
+        }
+        Some(NetworkBody::ShowMessage(_)) => {
+            return command_result(
+                command_id,
+                false,
+                "MESSAGE_INVALID",
+                "текст сообщения должен содержать от 1 до 1000 байт",
+            );
+        }
+        Some(NetworkBody::LaunchApplication(application))
+            if catalog_application(&application.application_id).is_some() =>
+        {
+            Some(SessionBody::LaunchApplication(
+                protocol::LaunchApplication {
+                    application_id: application.application_id,
+                },
+            ))
+        }
+        Some(NetworkBody::LaunchApplication(_)) => {
+            return command_result(
+                command_id,
+                false,
+                "APPLICATION_NOT_ALLOWED",
+                "приложение отсутствует в локальном каталоге",
+            );
+        }
+        Some(NetworkBody::OpenUrl(open_url)) if is_allowed_url(&open_url.url) => {
+            Some(SessionBody::OpenUrl(protocol::OpenUrl {
+                url: open_url.url,
+            }))
+        }
+        Some(NetworkBody::OpenUrl(_)) => {
+            return command_result(
+                command_id,
+                false,
+                "URL_NOT_ALLOWED",
+                "разрешены только HTTP и HTTPS URL без пробелов",
+            );
+        }
+        Some(NetworkBody::RestartDevice(_)) => {
+            return match execute_power_action(PowerAction::Restart) {
+                Ok(()) => command_result(command_id, true, "", "перезагрузка запущена"),
+                Err(error) => {
+                    command_result(command_id, false, "RESTART_FAILED", error.to_string())
+                }
+            };
+        }
+        Some(NetworkBody::ShutdownDevice(_)) => {
+            return match execute_power_action(PowerAction::Shutdown) {
+                Ok(()) => command_result(command_id, true, "", "выключение запущено"),
+                Err(error) => {
+                    command_result(command_id, false, "SHUTDOWN_FAILED", error.to_string())
+                }
+            };
+        }
+        None => {
+            return command_result(
+                command_id,
+                false,
+                "COMMAND_UNSUPPORTED",
+                "отсутствует действие команды",
+            );
+        }
+    };
+
+    let local = SessionCommand {
+        command_id: command_id.clone(),
+        body: session_body,
+    };
+    match capture_broker.execute_session_command(local).await {
+        Ok(result) => command_result(
+            command_id,
+            result.success,
+            result.error_code,
+            result.message,
+        ),
+        Err(error) => command_result(command_id, false, error.code, error.message),
+    }
 }
 
 fn new_message_id() -> String {
@@ -444,6 +616,9 @@ async fn connection_task(
     > = None;
     let mut pending_remote_start: Option<oneshot::Sender<Result<(), protocol::CaptureError>>> =
         None;
+    let mut pending_session_command: Option<
+        oneshot::Sender<Result<SessionCommandResult, protocol::CaptureError>>,
+    > = None;
 
     loop {
         tokio::select! {
@@ -493,6 +668,18 @@ async fn connection_task(
                         let request = Envelope { message_id: new_message_id(), payload: Some(Payload::RemoteInputEvent(event)) };
                         if connection.send(&request).await.is_err() { break; }
                     }
+                    Some(ConnectionCommand::SessionCommand { command, response }) => {
+                        if pending_session_command.is_some() {
+                            let _ = response.send(Err(protocol::CaptureError { code: "COMMAND_BUSY".to_owned(), message: "предыдущая команда ещё обрабатывается".to_owned() }));
+                            continue;
+                        }
+                        let request = Envelope { message_id: new_message_id(), payload: Some(Payload::SessionCommand(command)) };
+                        if connection.send(&request).await.is_err() {
+                            let _ = response.send(Err(protocol::CaptureError { code: "SESSION_HOST_DISCONNECTED".to_owned(), message: "не удалось отправить команду Session Host".to_owned() }));
+                            break;
+                        }
+                        pending_session_command = Some(response);
+                    }
                     None => break,
                 }
             }
@@ -541,6 +728,11 @@ async fn connection_task(
                             }
                             Some(Payload::RemoteControlStopped(stopped)) => {
                                 tracing::info!(session_id, pid, reason = stopped.reason, event = "REMOTE_CONTROL_SESSION_STOPPED");
+                            }
+                            Some(Payload::SessionCommandResult(result)) => {
+                                if let Some(response) = pending_session_command.take() {
+                                    let _ = response.send(Ok(result));
+                                }
                             }
                             _ => tracing::warn!(session_id, pid, "received unexpected IPC message"),
                         }
@@ -1018,6 +1210,39 @@ async fn serve_heartbeat_loop(
                                 message_id: new_message_id(),
                                 timestamp_ms: now_unix_ms(),
                                 payload: Some(payload),
+                            }).await?;
+                        }
+                        Some(protocol::network::envelope::Payload::Command(command)) => {
+                            let command_id = command.command_id.clone();
+                            let result = match capture_broker.admit_command(
+                                &command_id,
+                                command.expires_at_unix_ms,
+                            ) {
+                                CommandAdmission::Execute => {
+                                    let result = execute_classroom_command(command, &capture_broker).await;
+                                    capture_broker.complete_command(&command_id, result.clone());
+                                    result
+                                }
+                                CommandAdmission::Replay(result) => result,
+                                CommandAdmission::InProgress => command_result(
+                                    command_id,
+                                    false,
+                                    "COMMAND_IN_PROGRESS",
+                                    "команда с этим идентификатором ещё выполняется",
+                                ),
+                                CommandAdmission::Expired => command_result(
+                                    command_id,
+                                    false,
+                                    "COMMAND_EXPIRED",
+                                    "срок действия команды истёк или идентификатор пуст",
+                                ),
+                            };
+                            tracing::info!(teacher_session_id = %teacher_session_id, command_id = %result.command_id, success = result.success, error_code = %result.error_code, action = "CLASSROOM_COMMAND", event = "AUDIT");
+                            connection.send(&protocol::network::Envelope {
+                                protocol_version: protocol::network::PROTOCOL_VERSION,
+                                message_id: new_message_id(),
+                                timestamp_ms: now_unix_ms(),
+                                payload: Some(protocol::network::envelope::Payload::CommandResult(result)),
                             }).await?;
                         }
                         Some(protocol::network::envelope::Payload::RemoteControlStart(request)) => {

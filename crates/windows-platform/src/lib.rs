@@ -6,14 +6,17 @@
 //! Крейт предоставляет только Windows-примитивы без продуктовых сущностей
 //! и собирается для target `x86_64-pc-windows-msvc`.
 
+pub mod classroom_ui;
 pub mod crypto;
 pub mod error;
 pub mod handles;
 pub mod indicator;
 pub mod input;
 pub mod pipes;
+pub mod power;
 pub mod process;
 pub mod security;
 pub mod sessions;
+pub mod shell;
 
 pub use error::{PlatformError, Result};
