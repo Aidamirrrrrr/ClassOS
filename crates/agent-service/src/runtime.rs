@@ -63,9 +63,33 @@ enum ConnectionCommand {
 #[derive(Default)]
 struct CaptureBroker {
     current: std::sync::Mutex<Option<(u32, mpsc::UnboundedSender<ConnectionCommand>)>>,
+    remote_owner: std::sync::Mutex<agent_core::remote::RemoteControlSession>,
 }
 
 impl CaptureBroker {
+    fn claim_remote(
+        &self,
+        owner: String,
+        session_id: String,
+    ) -> Result<(), agent_core::remote::RemoteControlError> {
+        self.remote_owner
+            .lock()
+            .expect("remote owner mutex poisoned")
+            .start(owner, session_id)
+    }
+    fn release_remote(&self, owner: &str) -> Option<String> {
+        self.remote_owner
+            .lock()
+            .expect("remote owner mutex poisoned")
+            .stop(owner)
+            .ok()
+    }
+    fn accepts_remote_input(&self, owner: &str) -> bool {
+        self.remote_owner
+            .lock()
+            .expect("remote owner mutex poisoned")
+            .accepts_input(owner)
+    }
     fn set(&self, pid: u32, sender: mpsc::UnboundedSender<ConnectionCommand>) {
         *self.current.lock().expect("capture broker mutex poisoned") = Some((pid, sender));
     }
@@ -848,12 +872,11 @@ async fn serve_heartbeat(
     let mut last_seen = std::time::Instant::now();
     let mut subscription: Option<agent_core::stream::ActiveSubscription> = None;
     let mut frame_clock: Option<agent_core::stream::FrameClock> = None;
-    let mut remote_session = agent_core::remote::RemoteControlSession::default();
     loop {
         tokio::select! {
             _ = tick.tick() => {
                 if last_seen.elapsed() > agent_core::network::NETWORK_OFFLINE_TIMEOUT {
-                    if remote_session.disconnect().is_some() { capture_broker.stop_remote("teacher_disconnected"); }
+                    if capture_broker.release_remote(&teacher_session_id).is_some() { capture_broker.stop_remote("teacher_disconnected"); }
                     return Ok(());
                 }
                 if subscription.is_some_and(|value| value.is_expired(now_unix_ms())) {
@@ -970,10 +993,10 @@ async fn serve_heartbeat(
                             let session_id = new_message_id();
                             let payload = if request.device_id != device_id {
                                 protocol::network::envelope::Payload::RemoteControlStopped(protocol::network::RemoteControlStopped { device_id: device_id.clone(), reason: "denied".to_owned() })
-                            } else if remote_session.start(teacher_session_id.clone(), session_id.clone()).is_err() {
+                            } else if capture_broker.claim_remote(teacher_session_id.clone(), session_id.clone()).is_err() {
                                 protocol::network::envelope::Payload::RemoteControlStopped(protocol::network::RemoteControlStopped { device_id: device_id.clone(), reason: "denied".to_owned() })
                             } else if let Err(error) = capture_broker.start_remote(session_id.clone()).await {
-                                let _ = remote_session.disconnect();
+                                let _ = capture_broker.release_remote(&teacher_session_id);
                                 tracing::warn!(code = error.code, event = "REMOTE_CONTROL_START_FAILED");
                                 protocol::network::envelope::Payload::RemoteControlStopped(protocol::network::RemoteControlStopped { device_id: device_id.clone(), reason: "error".to_owned() })
                             } else {
@@ -983,8 +1006,8 @@ async fn serve_heartbeat(
                             connection.send(&protocol::network::Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: new_message_id(), timestamp_ms: now_unix_ms(), payload: Some(payload) }).await?;
                         }
                         Some(protocol::network::envelope::Payload::RemoteControlStop(request)) => {
-                            let payload = match remote_session.stop(&teacher_session_id) {
-                                Ok(session_id) if request.device_id == device_id => {
+                            let payload = match capture_broker.release_remote(&teacher_session_id) {
+                                Some(session_id) if request.device_id == device_id => {
                                     capture_broker.stop_remote("teacher_stopped");
                                     tracing::info!(teacher_session_id = %teacher_session_id, session_id = %session_id, action = "REMOTE_CONTROL_STOPPED", result = "SUCCESS", event = "AUDIT");
                                     protocol::network::envelope::Payload::RemoteControlStopped(protocol::network::RemoteControlStopped { device_id: device_id.clone(), reason: "teacher_stopped".to_owned() })
@@ -994,7 +1017,7 @@ async fn serve_heartbeat(
                             connection.send(&protocol::network::Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: new_message_id(), timestamp_ms: now_unix_ms(), payload: Some(payload) }).await?;
                         }
                         Some(protocol::network::envelope::Payload::RemoteInputEvent(event)) => {
-                            if event.device_id != device_id || !remote_session.accepts_input(&teacher_session_id) {
+                            if event.device_id != device_id || !capture_broker.accepts_remote_input(&teacher_session_id) {
                                 tracing::warn!(event = "REMOTE_INPUT_REJECTED", reason = "not_remote_owner");
                             } else if let Some(event) = to_local_remote_input(event) {
                                 if let Err(error) = capture_broker.send_remote_input(event) {
@@ -1007,7 +1030,7 @@ async fn serve_heartbeat(
                         _ => {}
                     },
                     None => {
-                        if remote_session.disconnect().is_some() { capture_broker.stop_remote("teacher_disconnected"); }
+                        if capture_broker.release_remote(&teacher_session_id).is_some() { capture_broker.stop_remote("teacher_disconnected"); }
                         return Ok(());
                     },
                 }
