@@ -35,7 +35,9 @@ docs/
 │       ├── 0011-t3-parameterized-local-capture.md
 │       ├── 0012-t4-remote-input-session-boundary.md
 │       ├── 0013-t5-command-privilege-routing.md
-│       └── 0014-t6-windows-enforcement-providers.md
+│       ├── 0014-t6-windows-enforcement-providers.md
+│       ├── 0015-t8-agent-update-channel.md
+│       └── 0016-t8-lease-authorization-on-device.md
 │
 └── specs/                                 ← ЧТО именно реализовать, milestone за milestone
     ├── BACKLOG.md                         статус всех milestone'ов T0–T8+
@@ -94,9 +96,11 @@ specs/BACKLOG.md → текущий milestone spec
 
 ## 3. Статус проекта
 
-Сейчас: **T0 и T1 реализованы и проверены автоматикой; T2–T4 находятся в
-реализации и ждут обязательной приёмки на реальных Windows-машинах;
-спецификации T0–T8 готовы**. Runtime-проверка ведётся отдельно и не заменяется
-успешной сборкой или тестами.
+Сейчас: **код T0–T8 написан целиком и проходит автоматические проверки; ни один
+milestone не имеет приёмки на реальной Windows-машине**. Runtime-проверка
+ведётся отдельно и не заменяется успешной сборкой или тестами — «собирается» и
+«работает в классе» здесь разные состояния, и второе пока не достигнуто ни
+разу.
 
-Актуальный трекер статусов — `specs/BACKLOG.md`.
+Актуальный трекер статусов — `specs/BACKLOG.md`; накопленный долг по каждому
+milestone — в `specs/README-T<N>.md`.

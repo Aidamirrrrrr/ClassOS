@@ -17,11 +17,17 @@ param(
     [Parameter(Mandatory = $true)][string]$EnrollmentCode,
     [string]$SourceDir = (Join-Path $PSScriptRoot "..\target\release"),
     [string]$InstallDir = "C:\Program Files\ClassOS",
+    # Адрес Cloud. Без него устройство работает полностью локально и не
+    # проверяет обновления — это допустимый режим, а не ошибка (ADR-0015).
+    [string]$CloudBaseUrl = "",
+    [ValidateSet("stable", "beta", "canary")][string]$UpdateChannel = "stable",
+    [string]$SoftwareProfileId = "python-classroom",
     [switch]$SkipFirewall
 )
 
 $ErrorActionPreference = "Stop"
 $ServiceName = "ClassOSAgent"
+$DataDir = "C:\ProgramData\ClassOS"
 $DiscoveryPort = 45900
 $ControlPort = 45901
 
@@ -92,6 +98,26 @@ function Set-FirewallRules {
     Write-Host "Правила брандмауэра настроены (UDP $DiscoveryPort, TCP $ControlPort)."
 }
 
+function Write-AgentConfig {
+    # Конфигурация пишется до первого запуска: служба читает её при старте, и
+    # дописывать адрес Cloud вручную после установки означало бы, что
+    # zero-touch на самом деле требует человека в кабинете (§2).
+    New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+    $configPath = Join-Path $DataDir "config.toml"
+    $lines = @(
+        'log_level = "info"',
+        "software_profile_id = `"$SoftwareProfileId`"",
+        "cloud_base_url = `"$CloudBaseUrl`"",
+        "update_channel = `"$UpdateChannel`""
+    )
+    Set-Content -Path $configPath -Value $lines -Encoding UTF8
+    if ([string]::IsNullOrEmpty($CloudBaseUrl)) {
+        Write-Host "Конфигурация записана; Cloud не задан — обновления проверяться не будут."
+    } else {
+        Write-Host "Конфигурация записана; Cloud: $CloudBaseUrl (канал $UpdateChannel)."
+    }
+}
+
 function Register-Enrollment {
     $binary = Join-Path $InstallDir "classos-service.exe"
     & $binary enroll --code $EnrollmentCode
@@ -118,6 +144,7 @@ function Start-AgentService {
 Assert-Administrator
 Assert-WindowsVersion
 Install-Binaries
+Write-AgentConfig
 Register-Service
 Set-FirewallRules
 Register-Enrollment

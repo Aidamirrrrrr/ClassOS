@@ -30,6 +30,24 @@
 | Phase F — Retention Engine | not started (overview only) | not started | not started | [FUTURE_PHASES_OVERVIEW.md](FUTURE_PHASES_OVERVIEW.md) |
 | Phase G — Enterprise / Multi-branch | not started (overview only) | not started | not started | [FUTURE_PHASES_OVERVIEW.md](FUTURE_PHASES_OVERVIEW.md) |
 
+## Что связано между собой после сквозной ревизии
+
+Часть кода T3 и T8 была написана и покрыта тестами, но не имела ни одного
+вызывающего — то есть существовала как библиотека, а не как функция продукта.
+Это состояние закрыто:
+
+| Что было | Состояние сейчас |
+| --- | --- |
+| `PriorityQueue` без вызывающих; кадры писались прямо в сокет | Очередь в реальном пути отправки, чтение не ждёт записи (README-T3) |
+| `transport::lease::authorize` без вызывающих | Право проверяется на каждой операции (ADR-0016) |
+| Крейт `updater` без вызывающих; установщик его не копировал | Служба проверяет обновления и запускает updater (ADR-0015) |
+| Cloud только in-memory, `schema.sql` никем не выполнялась | PostgreSQL-адаптер, CI поднимает настоящую базу |
+| Cloud ни с чем не соединён | Teacher Console входит в Cloud, получает lease и регистрирует устройства |
+| Обнаружение по одному устройству на нажатие | Непрерывное обнаружение, список пополняется сам |
+
+Это не меняет `Runtime validation`: связанный и проверенный автоматикой код
+по-прежнему ни разу не запускался в классе.
+
 ## Правила обновления
 
 1. Milestone не начинается в коде, пока его строка не `spec-ready`.

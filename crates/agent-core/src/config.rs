@@ -244,6 +244,42 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    /// Ровно тот файл, который пишет `scripts/install-classos.ps1`.
+    /// Расхождение установщика и разбора конфигурации выяснилось бы иначе
+    /// только на устройстве, где служба уже не стартует.
+    #[test]
+    fn installer_written_config_is_parsed() {
+        let dir = tempdir();
+        let path = dir.join("installer-config.toml");
+        std::fs::write(
+            &path,
+            "log_level = \"info\"\n\
+             software_profile_id = \"python-classroom\"\n\
+             cloud_base_url = \"https://cloud.example.org\"\n\
+             update_channel = \"beta\"\n",
+        )
+        .unwrap();
+
+        let config = AgentConfig::load_from(&path).unwrap();
+        assert_eq!(config.cloud_base_url, "https://cloud.example.org");
+        assert_eq!(config.update_channel, "beta");
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Конфигурация без облачных полей остаётся валидной: устройство без
+    /// Cloud полностью работоспособно и просто не проверяет обновления.
+    #[test]
+    fn config_without_cloud_disables_updates() {
+        let dir = tempdir();
+        let path = dir.join("local-only-config.toml");
+        std::fs::write(&path, "log_level = \"info\"\n").unwrap();
+
+        let config = AgentConfig::load_from(&path).unwrap();
+        assert!(config.cloud_base_url.is_empty());
+        assert_eq!(config.update_channel, "stable");
+        std::fs::remove_file(&path).ok();
+    }
+
     #[test]
     fn load_from_malformed_file_errors() {
         let dir = tempdir();

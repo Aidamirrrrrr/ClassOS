@@ -42,5 +42,7 @@ ADR фиксирует **необратимое или дорогое в раз�
 | [0012](0012-t4-remote-input-session-boundary.md) | Remote input выполняется только в Session Host | Accepted |
 | [0013](0013-t5-command-privilege-routing.md) | Classroom-команды проходят через границу привилегий | Accepted |
 | [0014](0014-t6-windows-enforcement-providers.md) | Выбор Windows enforcement-технологии для T6 | Accepted |
+| [0015](0015-t8-agent-update-channel.md) | Канал получения обновлений агентом | Accepted |
+| [0016](0016-t8-lease-authorization-on-device.md) | Проверка прав преподавателя на устройстве по classroom lease | Accepted |
 
-Следующий свободный номер: **0015**.
+Следующий свободный номер: **0017**.

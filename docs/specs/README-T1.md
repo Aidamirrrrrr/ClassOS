@@ -44,10 +44,20 @@ and Transport Protocol Port Number Registry IANA. Это не исключает
 - подписанный Teacher credential и проверка application-level TeacherHello;
 - минимальный Tauri Teacher Console: discovery, выпуск одноразового кода и enrollment.
 
+## Дополнено позднее
+
+- непрерывное обнаружение (`transport::listen_loop`) вместо одного объявления
+  за нажатие кнопки: класс из пятнадцати машин собирается сам, а повторное
+  объявление обновляет адрес устройства;
+- список устройств в Teacher Console пополняется событиями по мере появления
+  объявлений.
+
 ## Пока не реализовано
 
-- полноценный UI списка устройств, reconnect и отображение всех состояний state machine;
-- обновление/отзыв credential и ротация ключа Teacher в следующих milestone'ах;
+- reconnect и отображение всех состояний connection state machine в UI;
+- обновление/отзыв credential и ротация ключа Teacher;
+- список устройств не переживает перезапуск консоли: он строится заново из
+  discovery, поэтому выключенное устройство исчезает из него молча;
 - интеграционная проверка двух реальных Windows-компьютеров в одной LAN.
 
 ## Runtime validation
