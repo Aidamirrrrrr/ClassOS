@@ -46,6 +46,7 @@ if (-not $SourceDir) {
 
 $serviceExeSrc = Join-Path $SourceDir "classos-service.exe"
 $sessionExeSrc = Join-Path $SourceDir "classos-session.exe"
+$updaterExeSrc = Join-Path $SourceDir "classos-updater.exe"
 
 if (-not (Test-Path $serviceExeSrc)) {
     throw "Не найден classos-service.exe: '$serviceExeSrc'. Выполните cargo build --release или задайте -SourceDir."
@@ -62,6 +63,13 @@ New-Item -ItemType Directory -Force -Path (Join-Path $DataDir "state") | Out-Nul
 
 Copy-Item -Force $serviceExeSrc (Join-Path $InstallDir "classos-service.exe")
 Copy-Item -Force $sessionExeSrc (Join-Path $InstallDir "classos-session.exe")
+# Updater необязателен для этого dev/CI-сценария: без него служба работает,
+# но не обновляется. Продуктовый установщик (install-classos.ps1) требует его.
+if (Test-Path $updaterExeSrc) {
+    Copy-Item -Force $updaterExeSrc (Join-Path $InstallDir "classos-updater.exe")
+} else {
+    Write-Host "classos-updater.exe не найден — автообновление будет недоступно."
+}
 
 # Оставляем стандартным пользователям только чтение и запуск. Изменять
 # установленные бинарники могут лишь привилегированные учётные записи.

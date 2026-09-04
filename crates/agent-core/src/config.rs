@@ -10,6 +10,10 @@ use crate::error::{AgentError, Result};
 /// Корневой каталог runtime-состояния ClassOS в Windows.
 pub const PROGRAM_DATA_DIR: &str = r"C:\ProgramData\ClassOS";
 
+/// Каталог установленных бинарников. Совпадает с `InstallDir` установщика:
+/// служба запускает `classos-updater.exe` оттуда, а не из рабочего каталога.
+pub const INSTALL_DIR: &str = r"C:\Program Files\ClassOS";
+
 /// Путь к конфигурации T0.
 pub fn config_file_path() -> PathBuf {
     PathBuf::from(PROGRAM_DATA_DIR).join("config.toml")
@@ -79,6 +83,20 @@ pub fn policy_workspace_dir() -> PathBuf {
     PathBuf::from(PROGRAM_DATA_DIR).join("state").join("policy")
 }
 
+/// Путь к `classos-updater.exe`.
+pub fn updater_binary_path() -> PathBuf {
+    PathBuf::from(INSTALL_DIR).join("classos-updater.exe")
+}
+
+/// Каталог, куда служба раскладывает проверенный манифест и файл обновления
+/// перед запуском updater. Отдельный от рабочих каталогов: его содержимое
+/// живёт ровно от проверки до установки.
+pub fn update_staging_dir() -> PathBuf {
+    PathBuf::from(PROGRAM_DATA_DIR)
+        .join("state")
+        .join("updates")
+}
+
 /// Каталог журналов.
 pub fn log_dir() -> PathBuf {
     PathBuf::from(PROGRAM_DATA_DIR).join("logs")
@@ -92,6 +110,15 @@ pub struct AgentConfig {
     /// привязка Room → профиль появляется вместе с Cloud v0 (T8).
     #[serde(default = "default_software_profile")]
     pub software_profile_id: String,
+    /// Базовый адрес Cloud API, например `https://cloud.example.org`.
+    ///
+    /// Пустая строка означает «Cloud не настроен»: устройство работает полностью
+    /// локально и не проверяет обновления (ADR-0015).
+    #[serde(default)]
+    pub cloud_base_url: String,
+    /// Канал обновлений устройства: `stable`, `beta` или `canary`.
+    #[serde(default = "default_update_channel")]
+    pub update_channel: String,
 }
 
 fn default_log_level() -> String {
@@ -102,11 +129,17 @@ fn default_software_profile() -> String {
     "python-classroom".to_string()
 }
 
+fn default_update_channel() -> String {
+    "stable".to_string()
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             log_level: default_log_level(),
             software_profile_id: default_software_profile(),
+            cloud_base_url: String::new(),
+            update_channel: default_update_channel(),
         }
     }
 }

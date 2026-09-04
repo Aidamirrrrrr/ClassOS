@@ -13,7 +13,7 @@ import { auditEvent } from "../domain/audit";
 import { checkCode, hashCode, issueToken } from "../domain/enrollment";
 import { issueLease, type LeasePermission } from "../domain/lease";
 import { authorize, type Permission } from "../domain/rbac";
-import { updateFor, type Channel } from "../domain/updates";
+import { toManifest, updateFor, type Channel } from "../domain/updates";
 import type { Membership, Store } from "../db/store";
 
 export interface AppDeps {
@@ -263,7 +263,9 @@ export function createApp(deps: AppDeps) {
       const channel = (url.searchParams.get("channel") ?? "stable") as Channel;
       const current = url.searchParams.get("current_version") ?? "0.0.0";
       const update = updateFor(await store.agentVersions(), channel, current);
-      return json({ update: update ?? null });
+      // Наружу уходит манифест в формате агента, а не внутренняя запись БД:
+      // устройство разбирает его как есть, без промежуточного преобразования.
+      return json({ update: update ? toManifest(update) : null });
     }
 
     // --- аудит ------------------------------------------------------------

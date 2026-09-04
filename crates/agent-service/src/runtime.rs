@@ -1008,6 +1008,10 @@ pub async fn run(
     mut service_events: mpsc::UnboundedReceiver<ServiceEvent>,
     status_handle: Option<ServiceStatusHandle>,
 ) {
+    // До любого TLS: и control-канал, и HTTPS-клиент обновлений используют
+    // rustls, который иначе отказался бы выбирать провайдера сам.
+    transport::install_crypto_provider();
+
     let session_host_path = match default_session_host_path() {
         Ok(path) => path,
         Err(err) => {
@@ -1036,6 +1040,7 @@ pub async fn run(
         }
     };
     let config = agent_core::config::AgentConfig::load().unwrap_or_default();
+    start_update_checks(&config, network_cancellation.child_token());
     let capture_broker = Arc::new(CaptureBroker {
         policy,
         health: Some(Arc::new(HealthCollector::new(config.software_profile_id))),
@@ -1131,6 +1136,28 @@ pub async fn run(
             }
         }
     }
+}
+
+/// Запускает фоновую проверку обновлений (ADR-0015).
+///
+/// Неизвестный канал в конфигурации — не повод молча обновляться по stable:
+/// устройство остаётся на текущей версии, а ошибка видна в журнале.
+fn start_update_checks(config: &agent_core::config::AgentConfig, cancellation: CancellationToken) {
+    let Some(channel) = updater::Channel::parse(&config.update_channel) else {
+        tracing::error!(
+            channel = %config.update_channel,
+            event = "UPDATE_CHANNEL_INVALID"
+        );
+        return;
+    };
+    tokio::spawn(agent_service::update_checker::run_update_checks(
+        config.cloud_base_url.clone(),
+        channel,
+        env!("CARGO_PKG_VERSION"),
+        agent_core::config::update_staging_dir(),
+        agent_core::config::updater_binary_path(),
+        cancellation,
+    ));
 }
 
 fn start_network(

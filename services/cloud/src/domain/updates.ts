@@ -47,6 +47,32 @@ export function latestForChannel(
     .sort((left, right) => compareVersions(right.version, left.version))[0];
 }
 
+/**
+ * Манифест в том виде, в каком его разбирает агент (`updater::UpdateManifest`).
+ *
+ * Имена полей — контракт между Cloud и устройством: расхождение ломает
+ * обновление молча, поэтому оно закреплено тестом с обеих сторон (ADR-0015).
+ */
+export interface UpdateManifest {
+  readonly version: string;
+  readonly url: string;
+  readonly sha256: string;
+  readonly signature: string;
+  readonly minimum_supported_version: string;
+  readonly release_channel: string;
+}
+
+export function toManifest(version: AgentVersion): UpdateManifest {
+  return {
+    version: version.version,
+    url: version.url,
+    sha256: version.sha256,
+    signature: version.signatureHex,
+    minimum_supported_version: version.minimumSupportedVersion,
+    release_channel: version.channel,
+  };
+}
+
 /** Есть ли для устройства обновление новее текущей версии. */
 export function updateFor(
   versions: readonly AgentVersion[],

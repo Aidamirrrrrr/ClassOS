@@ -112,6 +112,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path target\release | Out-Null
           Copy-Item target\x86_64-pc-windows-msvc\release\classos-service.exe target\release\
           Copy-Item target\x86_64-pc-windows-msvc\release\classos-session.exe target\release\
+          Copy-Item target\x86_64-pc-windows-msvc\release\classos-updater.exe target\release\
 
       - name: Install and start ClassOSAgent service
         shell: pwsh

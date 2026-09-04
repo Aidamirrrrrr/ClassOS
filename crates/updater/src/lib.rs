@@ -87,6 +87,8 @@ pub fn parse_manifest(text: &str) -> Result<UpdateManifest, UpdateError> {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum UpdateError {
+    #[error("сборка выполнена без ключа издателя обновлений")]
+    MissingPublisherKey,
     #[error("некорректный публичный ключ издателя")]
     InvalidPublisherKey,
     #[error("подпись манифеста не прошла проверку")]
@@ -142,6 +144,31 @@ pub enum UpdateDecision {
     Apply,
     /// Версия не новее установленной.
     AlreadyCurrent,
+}
+
+/// Публичный ключ издателя, вшитый в бинарник при сборке релиза.
+///
+/// Ключ, лежащий рядом на диске, обесценил бы проверку подписи (spec T8
+/// §12.3), поэтому он приходит из переменной окружения сборки
+/// `CLASSOS_PUBLISHER_KEY_HEX`. Сборка без ключа компилируется, но
+/// **отказывается обновляться**: тихо принимать неподписанные обновления
+/// нельзя.
+///
+/// Общая функция для службы и для `classos-updater.exe`: два разных
+/// определения одного доверенного ключа рано или поздно разошлись бы.
+pub fn publisher_key() -> Result<[u8; 32], UpdateError> {
+    let Some(hex) = option_env!("CLASSOS_PUBLISHER_KEY_HEX") else {
+        return Err(UpdateError::MissingPublisherKey);
+    };
+    if hex.len() != 64 {
+        return Err(UpdateError::InvalidPublisherKey);
+    }
+    let mut bytes = [0_u8; 32];
+    for (index, slot) in bytes.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16)
+            .map_err(|_| UpdateError::InvalidPublisherKey)?;
+    }
+    Ok(bytes)
 }
 
 /// Проверяет манифест до любой загрузки файла.

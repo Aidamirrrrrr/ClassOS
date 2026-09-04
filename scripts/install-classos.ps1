@@ -47,7 +47,10 @@ function Install-Binaries {
         throw "Каталог с бинарниками не найден: $SourceDir"
     }
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    foreach ($name in @("classos-service.exe", "classos-session.exe")) {
+    # classos-updater.exe ставится вместе с остальными: служба запускает его
+    # из каталога установки, поэтому без него автообновление невозможно
+    # (spec T8 §8.4, ADR-0015).
+    foreach ($name in @("classos-service.exe", "classos-session.exe", "classos-updater.exe")) {
         $source = Join-Path $SourceDir $name
         if (-not (Test-Path $source)) { throw "Не найден $name в $SourceDir" }
         Copy-Item $source (Join-Path $InstallDir $name) -Force

@@ -8,7 +8,7 @@
 fn main() {
     use std::path::PathBuf;
     use updater::{
-        Channel, UpdateOutcome, evaluate_manifest, install_verified, verify_payload,
+        Channel, UpdateOutcome, evaluate_manifest, install_verified, publisher_key, verify_payload,
         windows_store::{ServiceHealthCheck, WindowsBinaryStore},
     };
 
@@ -71,25 +71,6 @@ fn main() {
             std::process::exit(1);
         }
     }
-}
-
-/// Публичный ключ издателя вшит в бинарник: ключ, лежащий рядом на диске,
-/// обесценил бы проверку подписи (spec T8 §12.3).
-///
-/// Ключ задаётся при сборке релиза через `CLASSOS_PUBLISHER_KEY_HEX`. Сборка
-/// без ключа компилируется, но обновляться отказывается: тихо принимать
-/// неподписанные обновления нельзя.
-#[cfg(windows)]
-fn publisher_key() -> Result<[u8; 32], String> {
-    let Some(hex) = option_env!("CLASSOS_PUBLISHER_KEY_HEX") else {
-        return Err("сборка выполнена без ключа издателя обновлений".to_owned());
-    };
-    let bytes: Result<Vec<u8>, _> = (0..hex.len())
-        .step_by(2)
-        .map(|index| u8::from_str_radix(&hex[index..index + 2], 16))
-        .collect();
-    let bytes = bytes.map_err(|error| error.to_string())?;
-    <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| "ожидается 32 байта".to_owned())
 }
 
 #[cfg(windows)]

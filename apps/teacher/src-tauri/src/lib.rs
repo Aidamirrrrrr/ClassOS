@@ -1020,6 +1020,11 @@ fn send_remote_key(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Явный выбор провайдера rustls до первого TLS-соединения: полагаться на
+    // автоматический выбор нельзя, он ломается от любой новой зависимости с
+    // другим провайдером.
+    transport::install_crypto_provider();
+
     let frames = Arc::new(Mutex::new(HashMap::new()));
     let stream_frames = Arc::clone(&frames);
     tauri::Builder::default()
