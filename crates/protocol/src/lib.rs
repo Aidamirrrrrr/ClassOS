@@ -126,6 +126,27 @@ pub mod network {
                     encoded_data: vec![0xff, 0xd8, 0xff],
                     format: "jpeg".to_owned(),
                     captured_at_unix_ms: 41,
+                    mode: StreamMode::Selected as i32,
+                    sequence: 3,
+                })),
+            };
+            assert_eq!(
+                Envelope::decode(envelope.encode_to_vec().as_slice()).unwrap(),
+                envelope
+            );
+        }
+
+        #[test]
+        fn stream_subscription_round_trip_preserves_mode_and_hints() {
+            let envelope = Envelope {
+                protocol_version: PROTOCOL_VERSION,
+                message_id: "subscribe-1".to_owned(),
+                timestamp_ms: 42,
+                payload: Some(envelope::Payload::StreamSubscribe(StreamSubscribe {
+                    device_id: "device-1".to_owned(),
+                    mode: StreamMode::Thumbnail as i32,
+                    target_fps: 2,
+                    max_width: 640,
                 })),
             };
             assert_eq!(
