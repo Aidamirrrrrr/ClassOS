@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use protocol::envelope::Payload;
 use protocol::{CaptureError, Envelope, LOCAL_PROTOCOL_VERSION, Pong, SessionHello, SessionInfo};
+use screen_capture::{DxgiDesktopCapture, FrameEncoder, JpegEncoder, ScreenCapture};
 use uuid::Uuid;
 
 use crate::ipc_client::IpcClient;
@@ -15,6 +16,37 @@ const PARENT_DEATH_GRACE_PERIOD: Duration = Duration::from_secs(2);
 
 fn new_message_id() -> String {
     Uuid::new_v4().to_string()
+}
+
+fn capture_frame(display_id: u32) -> Result<protocol::Frame, screen_capture::CaptureError> {
+    let mut capture = DxgiDesktopCapture::new()?;
+    capture.start(display_id)?;
+    let raw = capture.next_frame()?;
+    capture.stop();
+    let mut encoder = JpegEncoder::new(80);
+    let encoded = encoder.encode(raw)?;
+    Ok(protocol::Frame {
+        display_id: encoded.display_id,
+        width: encoded.width,
+        height: encoded.height,
+        encoded_data: encoded.data,
+        format: encoded.format.to_owned(),
+    })
+}
+
+fn public_capture_error(error: &screen_capture::CaptureError) -> (&'static str, &'static str) {
+    match error {
+        screen_capture::CaptureError::DisplayNotFound(_) => {
+            ("DISPLAY_NOT_FOUND", "указанный дисплей не найден")
+        }
+        screen_capture::CaptureError::NotStarted => {
+            ("CAPTURE_NOT_STARTED", "захват экрана не запущен")
+        }
+        screen_capture::CaptureError::BackendUnavailable => {
+            ("CAPTURE_UNAVAILABLE", "захват экрана недоступен")
+        }
+        _ => ("CAPTURE_FAILED", "не удалось получить снимок экрана"),
+    }
 }
 
 pub async fn run(session_id: u32, pipe_name: &str) -> std::io::Result<()> {
@@ -97,16 +129,24 @@ pub async fn run(session_id: u32, pipe_name: &str) -> std::io::Result<()> {
                 }
             }
             Some(Payload::CaptureRequest(request)) => {
-                // DXGI backend подключается следующим шагом T2. Уже сейчас
-                // отвечаем структурированной ошибкой, без бесконечного ожидания.
-                let error = Envelope {
-                    message_id: new_message_id(),
-                    payload: Some(Payload::CaptureError(CaptureError {
-                        code: "CAPTURE_BACKEND_UNAVAILABLE".to_owned(),
-                        message: format!("захват дисплея {} ещё не реализован", request.display_id),
-                    })),
+                let response = match capture_frame(request.display_id) {
+                    Ok(frame) => Envelope {
+                        message_id: new_message_id(),
+                        payload: Some(Payload::Frame(frame)),
+                    },
+                    Err(error) => {
+                        tracing::warn!(error = %error, display_id = request.display_id, event = "CAPTURE_FAILED");
+                        let (code, message) = public_capture_error(&error);
+                        Envelope {
+                            message_id: new_message_id(),
+                            payload: Some(Payload::CaptureError(CaptureError {
+                                code: code.to_owned(),
+                                message: message.to_owned(),
+                            })),
+                        }
+                    }
                 };
-                if client.send(&error).await.is_err() {
+                if client.send(&response).await.is_err() {
                     break;
                 }
             }
