@@ -15,7 +15,7 @@ use agent_core::supervisor::{ServiceEvent, SessionSupervisor, SupervisorEvent};
 use agent_core::traits::SessionProcessLauncher;
 use protocol::envelope::Payload;
 use protocol::{Envelope, GetSessionInfo, LOCAL_PROTOCOL_VERSION, Ping, ServiceHello, Shutdown};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::{MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -42,9 +42,66 @@ enum ConnectionEvent {
     Lost { pid: u32 },
 }
 
-#[derive(Debug, Clone, Copy)]
 enum ConnectionCommand {
     Shutdown,
+    Capture {
+        display_id: u32,
+        response: oneshot::Sender<Result<protocol::Frame, protocol::CaptureError>>,
+    },
+}
+
+#[derive(Default)]
+struct CaptureBroker {
+    current: std::sync::Mutex<Option<(u32, mpsc::UnboundedSender<ConnectionCommand>)>>,
+}
+
+impl CaptureBroker {
+    fn set(&self, pid: u32, sender: mpsc::UnboundedSender<ConnectionCommand>) {
+        *self.current.lock().expect("capture broker mutex poisoned") = Some((pid, sender));
+    }
+
+    fn clear(&self, pid: u32) {
+        let mut current = self.current.lock().expect("capture broker mutex poisoned");
+        if current
+            .as_ref()
+            .is_some_and(|(current_pid, _)| *current_pid == pid)
+        {
+            *current = None;
+        }
+    }
+
+    async fn capture(&self, display_id: u32) -> Result<protocol::Frame, protocol::CaptureError> {
+        let sender = self
+            .current
+            .lock()
+            .expect("capture broker mutex poisoned")
+            .as_ref()
+            .map(|(_, sender)| sender.clone())
+            .ok_or_else(|| protocol::CaptureError {
+                code: "NO_INTERACTIVE_SESSION".to_owned(),
+                message: "нет активной пользовательской сессии".to_owned(),
+            })?;
+        let (response, receiver) = oneshot::channel();
+        sender
+            .send(ConnectionCommand::Capture {
+                display_id,
+                response,
+            })
+            .map_err(|_| protocol::CaptureError {
+                code: "SESSION_HOST_DISCONNECTED".to_owned(),
+                message: "Session Host недоступен".to_owned(),
+            })?;
+        tokio::time::timeout(Duration::from_secs(3), receiver)
+            .await
+            .map_err(|_| protocol::CaptureError {
+                code: "CAPTURE_TIMEOUT".to_owned(),
+                message: "время ожидания снимка истекло".to_owned(),
+            })?
+            .map_err(|_| protocol::CaptureError {
+                code: "SESSION_HOST_DISCONNECTED".to_owned(),
+                message: "Session Host закрыл запрос".to_owned(),
+            })?
+    }
 }
 
 fn new_message_id() -> String {
@@ -105,6 +162,7 @@ fn do_reconcile(
     service_instance_id: &str,
     conn_tx: &mpsc::UnboundedSender<ConnectionEvent>,
     connections: &mut HashMap<u32, mpsc::UnboundedSender<ConnectionCommand>>,
+    capture_broker: &Arc<CaptureBroker>,
 ) {
     let events = match supervisor.reconcile(Instant::now()) {
         Ok(events) => events,
@@ -134,7 +192,8 @@ fn do_reconcile(
             let conn_tx = conn_tx.clone();
             let service_instance_id = service_instance_id.to_string();
             let (command_tx, command_rx) = mpsc::unbounded_channel();
-            connections.insert(pid, command_tx);
+            connections.insert(pid, command_tx.clone());
+            capture_broker.set(pid, command_tx);
             tokio::spawn(connection_task(
                 pipe_name,
                 user_sid,
@@ -244,6 +303,9 @@ async fn connection_task(
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut sequence: u64 = 0;
     let mut last_pong = Instant::now();
+    let mut pending_capture: Option<
+        oneshot::Sender<Result<protocol::Frame, protocol::CaptureError>>,
+    > = None;
 
     loop {
         tokio::select! {
@@ -257,6 +319,21 @@ async fn connection_task(
                         let _ = connection.send(&shutdown).await;
                         tracing::info!(session_id, pid, event = "IPC_SHUTDOWN_SENT");
                         break;
+                    }
+                    Some(ConnectionCommand::Capture { display_id, response }) => {
+                        if pending_capture.is_some() {
+                            let _ = response.send(Err(protocol::CaptureError { code: "CAPTURE_BUSY".to_owned(), message: "предыдущий снимок ещё обрабатывается".to_owned() }));
+                            continue;
+                        }
+                        let request = Envelope {
+                            message_id: new_message_id(),
+                            payload: Some(Payload::CaptureRequest(protocol::CaptureRequest { display_id })),
+                        };
+                        if connection.send(&request).await.is_err() {
+                            let _ = response.send(Err(protocol::CaptureError { code: "SESSION_HOST_DISCONNECTED".to_owned(), message: "не удалось отправить запрос Session Host".to_owned() }));
+                            break;
+                        }
+                        pending_capture = Some(response);
                     }
                     None => break,
                 }
@@ -293,9 +370,11 @@ async fn connection_task(
                                 );
                             }
                             Some(Payload::Frame(frame)) => {
+                                if let Some(response) = pending_capture.take() { let _ = response.send(Ok(frame.clone())); }
                                 tracing::info!(session_id, pid, display_id = frame.display_id, width = frame.width, height = frame.height, format = frame.format, event = "CAPTURE_FRAME_RECEIVED");
                             }
                             Some(Payload::CaptureError(error)) => {
+                                if let Some(response) = pending_capture.take() { let _ = response.send(Err(error.clone())); }
                                 tracing::warn!(session_id, pid, code = error.code, message = error.message, event = "CAPTURE_FAILED");
                             }
                             _ => tracing::warn!(session_id, pid, "received unexpected IPC message"),
@@ -347,6 +426,7 @@ pub async fn run(
     let mut supervisor: Supervisor = SessionSupervisor::new(provider, launcher, spec);
     let service_instance_id = agent_core::config::new_service_instance_id().to_string();
     let network_cancellation = CancellationToken::new();
+    let capture_broker = Arc::new(CaptureBroker::default());
     match agent_core::config::load_or_create_device_id(&agent_core::config::device_id_path()) {
         Ok(device_id) => {
             match crate::identity_store::load_or_create(
@@ -370,6 +450,7 @@ pub async fn run(
                         device_id.to_string(),
                         Arc::new(identity),
                         network_cancellation.child_token(),
+                        Arc::clone(&capture_broker),
                     );
                 }
                 Err(err) => {
@@ -390,7 +471,7 @@ pub async fn run(
     loop {
         tokio::select! {
             _ = reconcile_tick.tick() => {
-                do_reconcile(&mut supervisor, &service_instance_id, &conn_tx, &mut connections);
+                do_reconcile(&mut supervisor, &service_instance_id, &conn_tx, &mut connections, &capture_broker);
             }
             maybe_event = service_events.recv() => {
                 match maybe_event {
@@ -402,15 +483,15 @@ pub async fn run(
                     Some(ServiceEvent::SessionLock(session_id)) => {
                         locked_sessions.insert(session_id);
                         tracing::info!(session_id, is_locked = true, event = "SESSION_LOCK_STATE_CHANGED");
-                        do_reconcile(&mut supervisor, &service_instance_id, &conn_tx, &mut connections);
+                        do_reconcile(&mut supervisor, &service_instance_id, &conn_tx, &mut connections, &capture_broker);
                     }
                     Some(ServiceEvent::SessionUnlock(session_id)) => {
                         locked_sessions.remove(&session_id);
                         tracing::info!(session_id, is_locked = false, event = "SESSION_LOCK_STATE_CHANGED");
-                        do_reconcile(&mut supervisor, &service_instance_id, &conn_tx, &mut connections);
+                        do_reconcile(&mut supervisor, &service_instance_id, &conn_tx, &mut connections, &capture_broker);
                     }
                     Some(_other) => {
-                        do_reconcile(&mut supervisor, &service_instance_id, &conn_tx, &mut connections);
+                        do_reconcile(&mut supervisor, &service_instance_id, &conn_tx, &mut connections, &capture_broker);
                     }
                     None => {
                         // Без SCM продолжаем работу по reconcile timer.
@@ -424,6 +505,7 @@ pub async fn run(
                     }
                     Some(ConnectionEvent::Lost { pid }) => {
                         connections.remove(&pid);
+                        capture_broker.clear(pid);
                         for event in supervisor.notify_ipc_lost(pid, Instant::now()) {
                             log_supervisor_event(&event);
                         }
@@ -439,6 +521,7 @@ fn start_network(
     device_id: String,
     identity: Arc<transport::DeviceIdentity>,
     cancellation: CancellationToken,
+    capture_broker: Arc<CaptureBroker>,
 ) {
     tokio::spawn(async move {
         let bind_addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, transport::DEFAULT_CONTROL_PORT));
@@ -488,8 +571,9 @@ fn start_network(
                     Ok((connection, peer)) => {
                         let identity = Arc::clone(&identity);
                         let device_id = device_id.clone();
+                        let capture_broker = Arc::clone(&capture_broker);
                         tokio::spawn(async move {
-                            if let Err(err) = handle_control_connection(connection, peer, device_id, identity).await {
+                            if let Err(err) = handle_control_connection(connection, peer, device_id, identity, capture_broker).await {
                                 tracing::debug!(error = %err, event = "CONTROL_CONNECTION_CLOSED");
                             }
                         });
@@ -506,6 +590,7 @@ async fn handle_control_connection(
     peer: SocketAddr,
     device_id: String,
     identity: Arc<transport::DeviceIdentity>,
+    capture_broker: Arc<CaptureBroker>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let now = now_unix_ms();
     connection
@@ -553,14 +638,14 @@ async fn handle_control_connection(
             timestamp_ms: now_unix_ms(),
             payload: Some(protocol::network::envelope::Payload::DeviceStatus(
                 protocol::network::DeviceStatus {
-                    device_id,
+                    device_id: device_id.clone(),
                     state: protocol::network::DeviceOnlineState::Online as i32,
                     agent_version: env!("CARGO_PKG_VERSION").to_owned(),
                 },
             )),
         };
         connection.send(&status).await?;
-        serve_heartbeat(connection).await?;
+        serve_heartbeat(connection, device_id, capture_broker).await?;
         return Ok(());
     }
 
@@ -613,6 +698,8 @@ async fn handle_control_connection(
 
 async fn serve_heartbeat(
     mut connection: transport::ServerControlConnection,
+    device_id: String,
+    capture_broker: Arc<CaptureBroker>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut tick = tokio::time::interval(agent_core::network::NETWORK_HEARTBEAT_INTERVAL);
     let mut last_seen = std::time::Instant::now();
@@ -655,15 +742,26 @@ async fn serve_heartbeat(
                             subscription = None;
                             tracing::info!(event = "STREAM_UNSUBSCRIBED");
                         }
-                        Some(protocol::network::envelope::Payload::ScreenshotRequest(_)) => {
+                        Some(protocol::network::envelope::Payload::ScreenshotRequest(request)) => {
+                            let payload = if request.device_id != device_id {
+                                protocol::network::envelope::Payload::CaptureError(protocol::network::CaptureError {
+                                    code: "DEVICE_MISMATCH".to_owned(), message: "запрос предназначен другому устройству".to_owned(),
+                                })
+                            } else {
+                                match capture_broker.capture(request.display_id).await {
+                                    Ok(frame) => protocol::network::envelope::Payload::ScreenFrame(protocol::network::ScreenFrame {
+                                        device_id: device_id.clone(), display_id: frame.display_id, width: frame.width, height: frame.height,
+                                        encoded_data: frame.encoded_data, format: frame.format, captured_at_unix_ms: now_unix_ms(),
+                                        mode: protocol::network::StreamMode::Selected as i32, sequence: 0,
+                                    }),
+                                    Err(error) => protocol::network::envelope::Payload::CaptureError(protocol::network::CaptureError { code: error.code, message: error.message }),
+                                }
+                            };
                             connection.send(&protocol::network::Envelope {
                                 protocol_version: protocol::network::PROTOCOL_VERSION,
                                 message_id: new_message_id(),
                                 timestamp_ms: now_unix_ms(),
-                                payload: Some(protocol::network::envelope::Payload::CaptureError(protocol::network::CaptureError {
-                                    code: "CAPTURE_PIPELINE_NOT_READY".to_owned(),
-                                    message: "маршрутизация capture в Session Host ещё не завершена".to_owned(),
-                                })),
+                                payload: Some(payload),
                             }).await?;
                         }
                         _ => {}
