@@ -56,17 +56,35 @@ impl DxgiDesktopCapture {
                     (desc.DesktopCoordinates.right - desc.DesktopCoordinates.left).max(0) as u32;
                 let height =
                     (desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top).max(0) as u32;
+                // Основной монитор Windows — тот, чей левый верхний угол
+                // рабочего стола находится в (0, 0). Порядок перечисления
+                // выходов DXGI этого не гарантирует.
+                let primary = desc.DesktopCoordinates.left == 0 && desc.DesktopCoordinates.top == 0;
                 displays.push(Display {
-                    id: displays.len() as u32,
+                    id: 0,
                     width,
                     height,
-                    primary: displays.is_empty(),
+                    primary,
                 });
                 outputs.push(output);
                 output_index += 1;
             }
             adapter_index += 1;
         }
+
+        // Основной монитор получает идентификатор 0: правило и его проверка
+        // живут в `primary_first`, чтобы не зависеть от наличия DXGI.
+        let order = crate::primary_first(&displays);
+        let displays = order
+            .iter()
+            .enumerate()
+            .map(|(id, source)| Display {
+                id: id as u32,
+                ..displays[*source]
+            })
+            .collect();
+        let outputs = order.iter().map(|index| outputs[*index].clone()).collect();
+
         Ok(Self {
             displays,
             outputs,

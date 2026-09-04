@@ -268,6 +268,21 @@ impl fmt::Debug for MockCapture {
     }
 }
 
+/// Порядок дисплеев, в котором основной идёт первым.
+///
+/// Возвращает индексы исходного списка. Запрос без явного выбора дисплея
+/// приходит с `display_id = 0`, поэтому основной монитор обязан получить
+/// именно этот идентификатор: порядок перечисления выходов DXGI совпадения с
+/// основным монитором не гарантирует.
+///
+/// Сортировка устойчива, поэтому остальные дисплеи сохраняют исходный
+/// порядок, а идентификаторы остаются предсказуемыми между запусками.
+pub fn primary_first(displays: &[Display]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..displays.len()).collect();
+    order.sort_by_key(|index| !displays[*index].primary);
+    order
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,5 +348,37 @@ mod tests {
         let scaled = scale_to_max_width(frame, 4).unwrap();
         assert_eq!((scaled.display_id, scaled.width, scaled.height), (3, 4, 2));
         assert_eq!(scaled.pixels.len(), 4 * 2 * 3);
+    }
+
+    fn display(id: u32, primary: bool) -> Display {
+        Display {
+            id,
+            width: 1920,
+            height: 1080,
+            primary,
+        }
+    }
+
+    /// Основной монитор, перечисленный вторым, обязан стать дисплеем 0 —
+    /// иначе преподаватель увидит соседний экран (spec T2 §13.2).
+    #[test]
+    fn primary_display_becomes_display_zero() {
+        let displays = [display(0, false), display(1, true), display(2, false)];
+        assert_eq!(primary_first(&displays), vec![1, 0, 2]);
+    }
+
+    /// Если основной уже первый, порядок не меняется.
+    #[test]
+    fn already_first_primary_keeps_order() {
+        let displays = [display(0, true), display(1, false)];
+        assert_eq!(primary_first(&displays), vec![0, 1]);
+    }
+
+    /// Ни один дисплей не помечен основным — порядок перечисления
+    /// сохраняется, а не переставляется произвольно.
+    #[test]
+    fn without_primary_enumeration_order_is_kept() {
+        let displays = [display(0, false), display(1, false)];
+        assert_eq!(primary_first(&displays), vec![0, 1]);
     }
 }
