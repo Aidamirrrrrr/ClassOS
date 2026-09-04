@@ -79,6 +79,10 @@ pub enum LeaseError {
     RoomNotAllowed,
     #[error("действие не разрешено этим lease")]
     PermissionDenied,
+    #[error("повреждённый classroom lease")]
+    Malformed,
+    #[error("неподдерживаемая версия classroom lease")]
+    UnsupportedVersion,
 }
 
 /// Канонические байты для подписи.
@@ -117,6 +121,124 @@ fn payload(lease: &ClassroomLease) -> Vec<u8> {
     bytes.extend_from_slice(&lease.issued_at_unix_ms.to_be_bytes());
     bytes.extend_from_slice(&lease.expires_at_unix_ms.to_be_bytes());
     bytes
+}
+
+impl SignedLease {
+    /// Байты для передачи преподавателем устройству.
+    ///
+    /// Это те же канонические байты, что подписаны, плюс сама подпись —
+    /// отдельного формата у сериализации нет намеренно: любой второй формат
+    /// пришлось бы отдельно доказывать однозначным.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut encoded = payload(&self.lease);
+        encoded.extend_from_slice(&self.signature);
+        encoded
+    }
+
+    /// Разбирает lease, полученный от преподавателя.
+    ///
+    /// Подпись здесь **не проверяется**: разбор и авторизация разделены, а
+    /// доверять содержимому можно только после `authorize`.
+    pub fn decode(encoded: &[u8]) -> Result<Self, LeaseError> {
+        if encoded.len() < SIGNATURE_SIZE {
+            return Err(LeaseError::Malformed);
+        }
+        let (payload_bytes, signature_bytes) = encoded.split_at(encoded.len() - SIGNATURE_SIZE);
+        let signature =
+            <[u8; SIGNATURE_SIZE]>::try_from(signature_bytes).map_err(|_| LeaseError::Malformed)?;
+        let mut reader = Reader::new(payload_bytes);
+
+        if reader.byte()? != LEASE_VERSION {
+            return Err(LeaseError::UnsupportedVersion);
+        }
+        let teacher_id = reader.text()?;
+        let organization_id = reader.text()?;
+        let branch_id = reader.text()?;
+
+        let rooms = reader.u32()?;
+        let mut allowed_rooms = Vec::with_capacity(rooms.min(MAX_LIST_LEN) as usize);
+        for _ in 0..rooms {
+            allowed_rooms.push(reader.text()?);
+        }
+
+        let permission_count = reader.u32()?;
+        let mut permissions = Vec::with_capacity(permission_count.min(MAX_LIST_LEN) as usize);
+        for _ in 0..permission_count {
+            let name = reader.text()?;
+            permissions.push(Permission::parse(&name).ok_or(LeaseError::Malformed)?);
+        }
+
+        let issued_at_unix_ms = reader.i64()?;
+        let expires_at_unix_ms = reader.i64()?;
+        if !reader.is_empty() {
+            return Err(LeaseError::Malformed);
+        }
+
+        Ok(Self {
+            lease: ClassroomLease {
+                teacher_id,
+                organization_id,
+                branch_id,
+                allowed_rooms,
+                permissions,
+                issued_at_unix_ms,
+                expires_at_unix_ms,
+            },
+            signature,
+        })
+    }
+}
+
+const SIGNATURE_SIZE: usize = 64;
+
+/// Верхняя граница для предварительного выделения памяти. Само значение длины
+/// проверяется чтением: испорченный lease не должен приводить к выделению
+/// гигабайта до того, как выяснится, что байтов столько нет.
+const MAX_LIST_LEN: u32 = 1_024;
+
+struct Reader<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> Reader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes }
+    }
+
+    fn take(&mut self, count: usize) -> Result<&'a [u8], LeaseError> {
+        if self.bytes.len() < count {
+            return Err(LeaseError::Malformed);
+        }
+        let (head, tail) = self.bytes.split_at(count);
+        self.bytes = tail;
+        Ok(head)
+    }
+
+    fn byte(&mut self) -> Result<u8, LeaseError> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u32(&mut self) -> Result<u32, LeaseError> {
+        let bytes = self.take(4)?;
+        Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn i64(&mut self) -> Result<i64, LeaseError> {
+        let bytes = self.take(8)?;
+        Ok(i64::from_be_bytes(
+            <[u8; 8]>::try_from(bytes).map_err(|_| LeaseError::Malformed)?,
+        ))
+    }
+
+    fn text(&mut self) -> Result<String, LeaseError> {
+        let len = self.u32()? as usize;
+        let bytes = self.take(len)?;
+        String::from_utf8(bytes.to_vec()).map_err(|_| LeaseError::Malformed)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
 }
 
 /// Выпускает lease. Выполняется в Cloud, а на устройстве — никогда.
@@ -374,5 +496,71 @@ mod tests {
             assert_eq!(Permission::parse(permission.as_str()), Some(permission));
         }
         assert_eq!(Permission::parse("manage_billing"), None);
+    }
+
+    /// Разбор возвращает ровно то, что было закодировано: устройство должно
+    /// видеть тот же lease, который подписал Cloud.
+    #[test]
+    fn encoded_lease_round_trips() {
+        let signed = issue(&key(), lease());
+        let decoded = SignedLease::decode(&signed.encode()).expect("разбор lease");
+        assert_eq!(decoded, signed);
+        assert!(
+            authorize(
+                &key().verifying_key().to_bytes(),
+                &decoded,
+                "room-2",
+                Permission::ViewClassroom,
+                50_000,
+            )
+            .is_ok()
+        );
+    }
+
+    /// Обрезанный или дополненный мусором lease — ошибка разбора, а не
+    /// частично прочитанные права.
+    #[test]
+    fn malformed_lease_is_rejected() {
+        let encoded = issue(&key(), lease()).encode();
+        assert_eq!(
+            SignedLease::decode(&encoded[..encoded.len() - 1]),
+            Err(LeaseError::Malformed)
+        );
+        let mut padded = encoded.clone();
+        padded.insert(0, 0);
+        assert!(SignedLease::decode(&padded).is_err());
+        assert_eq!(SignedLease::decode(&[]), Err(LeaseError::Malformed));
+    }
+
+    /// Неизвестная версия формата отвергается явно, а не разбирается как
+    /// текущая: молчаливая совместимость здесь опаснее отказа.
+    #[test]
+    fn unknown_lease_version_is_rejected() {
+        let mut encoded = issue(&key(), lease()).encode();
+        encoded[0] = LEASE_VERSION + 1;
+        assert_eq!(
+            SignedLease::decode(&encoded),
+            Err(LeaseError::UnsupportedVersion)
+        );
+    }
+
+    /// Разбор не проверяет подпись — это делает `authorize`. Подменённый
+    /// lease обязан разобраться и провалиться именно на подписи.
+    #[test]
+    fn decoding_does_not_grant_trust() {
+        let mut encoded = issue(&key(), lease()).encode();
+        let last = encoded.len() - 1;
+        encoded[last] ^= 0xff;
+        let decoded = SignedLease::decode(&encoded).expect("разбор всё ещё возможен");
+        assert_eq!(
+            authorize(
+                &key().verifying_key().to_bytes(),
+                &decoded,
+                "room-2",
+                Permission::ViewClassroom,
+                50_000,
+            ),
+            Err(LeaseError::InvalidSignature)
+        );
     }
 }

@@ -25,6 +25,12 @@ pub enum IdentityStoreError {
 pub struct EnrollmentMaterial {
     pub credential: Vec<u8>,
     pub issuer_public_key: [u8; 32],
+    /// Публичный ключ издателя classroom lease. `None` означает enrollment
+    /// через локальную Teacher Console (ADR-0007): прав по lease у такого
+    /// устройства нет и требовать их не с кого.
+    pub lease_issuer_public_key: Option<[u8; 32]>,
+    /// Кабинет устройства. Заполняется только Cloud вместе с ключом издателя.
+    pub room_id: String,
 }
 
 /// Загружает существующую identity либо один раз создаёт новую. Частично
@@ -114,9 +120,33 @@ pub fn load_enrollment() -> Result<Option<EnrollmentMaterial>, IdentityStoreErro
             let issuer_public_key = std::fs::read(issuer_path)?
                 .try_into()
                 .map_err(|_| IdentityStoreError::PartialEnrollment)?;
+            // Ключ издателя lease и кабинет читаются отдельно: устройство
+            // из ADR-0007 их просто не имеет, и это не повреждённое
+            // состояние.
+            let lease_issuer_public_key =
+                match std::fs::read(agent_core::config::lease_issuer_key_path()) {
+                    Ok(bytes) => Some(
+                        <[u8; 32]>::try_from(bytes.as_slice())
+                            .map_err(|_| IdentityStoreError::PartialEnrollment)?,
+                    ),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(err) => return Err(err.into()),
+                };
+            let room_id = match std::fs::read_to_string(agent_core::config::room_id_path()) {
+                Ok(value) => value.trim().to_owned(),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(err) => return Err(err.into()),
+            };
+            // Ключ без кабинета проверить нечем: lease перечисляет кабинеты,
+            // и пустой идентификатор совпал бы только со сломанным lease.
+            if lease_issuer_public_key.is_some() && room_id.is_empty() {
+                return Err(IdentityStoreError::PartialEnrollment);
+            }
             Ok(Some(EnrollmentMaterial {
                 credential: std::fs::read(credential_path)?,
                 issuer_public_key,
+                lease_issuer_public_key,
+                room_id,
             }))
         }
         _ => Err(IdentityStoreError::PartialEnrollment),
@@ -130,6 +160,18 @@ pub fn save_enrollment(material: &EnrollmentMaterial) -> Result<(), IdentityStor
     if let Err(err) = std::fs::write(&issuer_path, material.issuer_public_key) {
         let _ = std::fs::remove_file(credential_path);
         return Err(err.into());
+    }
+    // Cloud-часть пишется только целиком: устройство с ключом издателя, но без
+    // кабинета, не смогло бы проверить ни один lease.
+    match (&material.lease_issuer_public_key, material.room_id.as_str()) {
+        (Some(key), room) if !room.is_empty() => {
+            std::fs::write(agent_core::config::lease_issuer_key_path(), key)?;
+            std::fs::write(agent_core::config::room_id_path(), room)?;
+        }
+        _ => {
+            let _ = std::fs::remove_file(agent_core::config::lease_issuer_key_path());
+            let _ = std::fs::remove_file(agent_core::config::room_id_path());
+        }
     }
     let _ = std::fs::remove_file(agent_core::config::pending_enrollment_code_path());
     Ok(())

@@ -27,6 +27,24 @@ jobs:
   cloud:
     name: ubuntu-latest (Cloud v0)
     runs-on: ubuntu-latest
+    # Реальный PostgreSQL: без него адаптер только компилировался бы, а
+    # расхождение с in-memory реализацией всплыло бы на развёртывании.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: classos
+          POSTGRES_USER: classos
+          POSTGRES_DB: classos_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://classos:classos@localhost:5432/classos_test
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -40,6 +58,17 @@ jobs:
         working-directory: services/cloud
       - name: bun test
         run: bun test
+        working-directory: services/cloud
+      - name: Проверить, что тесты PostgreSQL не пропущены
+        # Пропущенный из-за отсутствия DATABASE_URL набор выглядит как
+        # успешный прогон, поэтому его отсутствие проверяется явно.
+        run: |
+          bun test test/postgres.test.ts 2>&1 | tee /tmp/pg-test.log
+          grep -qE "^ *[1-9][0-9]* pass" /tmp/pg-test.log
+          if grep -qE "^ *[1-9][0-9]* skip" /tmp/pg-test.log; then
+            echo "Тесты PostgreSQL пропущены — DATABASE_URL не подхвачен" >&2
+            exit 1
+          fi
         working-directory: services/cloud
 
   windows:

@@ -35,7 +35,8 @@ pub use discovery::{
     new_announcement,
 };
 pub use handshake::{
-    HandshakeError, VerifiedTeacher, build_device_hello, build_teacher_hello, verify_teacher_hello,
+    HandshakeError, LeaseRequirement, TeacherAuthorization, VerifiedTeacher, build_device_hello,
+    build_teacher_hello, verify_teacher_hello,
 };
 pub use identity::{DeviceIdentity, IdentityError};
 pub use lease::{ClassroomLease, LeaseError, Permission, SignedLease, authorize, issue};

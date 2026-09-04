@@ -1251,12 +1251,22 @@ async fn handle_control_connection(
         let Some(hello) = connection.recv().await? else {
             return Ok(());
         };
+        // Режим авторизации определяет устройство по собственному состоянию
+        // enrollment, а не по содержимому запроса (ADR-0016).
+        let lease_requirement = match &material.lease_issuer_public_key {
+            Some(issuer_public_key) => transport::LeaseRequirement::Required {
+                issuer_public_key,
+                room_id: &material.room_id,
+            },
+            None => transport::LeaseRequirement::LocalEnrollment,
+        };
         let verified = match transport::verify_teacher_hello(
             &hello,
             &material.issuer_public_key,
             &device_id,
             identity.certificate_der(),
             now_unix_ms(),
+            lease_requirement,
         ) {
             Ok(verified) => verified,
             Err(transport::HandshakeError::UpgradeRequired(required)) => {
@@ -1274,7 +1284,7 @@ async fn handle_control_connection(
             }
             Err(err) => return Err(Box::new(err)),
         };
-        tracing::info!(peer = %peer, teacher_session_id = %verified.teacher_session_id, event = "CONTROL_AUTHENTICATED");
+        tracing::info!(peer = %peer, teacher_session_id = %verified.teacher_session_id, authorization = verified.authorization.source(), event = "CONTROL_AUTHENTICATED");
         let status = protocol::network::Envelope {
             protocol_version: protocol::network::PROTOCOL_VERSION,
             message_id: new_message_id(),
@@ -1292,6 +1302,7 @@ async fn handle_control_connection(
             connection,
             device_id,
             verified.teacher_session_id,
+            verified.authorization,
             capture_broker,
         )
         .await?;
@@ -1330,6 +1341,21 @@ async fn handle_control_connection(
         return Ok(());
     }
     let issuer_public_key: [u8; 32] = result.issuer_public_key_der.as_slice().try_into().unwrap();
+    // Cloud присылает ключ издателя lease и кабинет; локальная Teacher Console
+    // (ADR-0007) оставляет оба поля пустыми, и устройство остаётся в прежнем
+    // режиме авторизации (ADR-0016).
+    let lease_issuer_public_key = match result.lease_issuer_public_key.len() {
+        0 => None,
+        32 => Some(<[u8; 32]>::try_from(result.lease_issuer_public_key.as_slice()).unwrap()),
+        _ => {
+            tracing::warn!(peer = %peer, event = "ENROLLMENT_REJECTED", reason = "malformed_lease_issuer_key");
+            return Ok(());
+        }
+    };
+    if lease_issuer_public_key.is_some() && result.room_id.is_empty() {
+        tracing::warn!(peer = %peer, event = "ENROLLMENT_REJECTED", reason = "missing_room_id");
+        return Ok(());
+    }
     transport::DeviceCredential::decode_and_verify(
         &result.issued_credential,
         &issuer_public_key,
@@ -1340,21 +1366,73 @@ async fn handle_control_connection(
     crate::identity_store::save_enrollment(&crate::identity_store::EnrollmentMaterial {
         credential: result.issued_credential,
         issuer_public_key,
+        lease_issuer_public_key,
+        room_id: result.room_id,
     })?;
     tracing::info!(peer = %peer, event = "ENROLLMENT_ACCEPTED");
     Ok(())
+}
+
+/// Право, которое требуется для команды.
+///
+/// Сопоставление операций и прав — часть контракта ADR-0016, поэтому оно
+/// собрано в одном месте, а не разбросано по веткам обработчика.
+fn required_permission(body: &protocol::network::command::Body) -> transport::Permission {
+    use protocol::network::command::Body;
+    match body {
+        Body::ApplyPolicy(_)
+        | Body::RollbackPolicy(_)
+        | Body::FocusModeEnable(_)
+        | Body::FocusModeDisable(_) => transport::Permission::ApplyLessonProfile,
+        Body::RepairDesiredState(_) => transport::Permission::RepairDevices,
+        Body::LockDevice(_)
+        | Body::UnlockDevice(_)
+        | Body::ShowMessage(_)
+        | Body::LaunchApplication(_)
+        | Body::OpenUrl(_)
+        | Body::RestartDevice(_)
+        | Body::ShutdownDevice(_) => transport::Permission::ControlClassroom,
+    }
+}
+
+/// Проверяет право и пишет отказ в аудит.
+///
+/// Время берётся текущее на каждой проверке: lease обязан переставать
+/// действовать посреди соединения, а не только на входе (ADR-0016).
+fn permitted(
+    authorization: &transport::TeacherAuthorization,
+    permission: transport::Permission,
+    teacher_session_id: &str,
+    action: &str,
+) -> bool {
+    match authorization.allows(permission, now_unix_ms()) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::info!(
+                teacher_session_id = %teacher_session_id,
+                action = action,
+                permission = permission.as_str(),
+                result = "DENIED",
+                reason = %error,
+                event = "AUDIT"
+            );
+            false
+        }
+    }
 }
 
 async fn serve_heartbeat(
     connection: transport::ServerControlConnection,
     device_id: String,
     teacher_session_id: String,
+    authorization: transport::TeacherAuthorization,
     capture_broker: Arc<CaptureBroker>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let result = serve_heartbeat_loop(
         connection,
         device_id,
         teacher_session_id.clone(),
+        authorization,
         Arc::clone(&capture_broker),
     )
     .await;
@@ -1436,6 +1514,7 @@ async fn serve_heartbeat_loop(
     connection: transport::ServerControlConnection,
     device_id: String,
     teacher_session_id: String,
+    authorization: transport::TeacherAuthorization,
     capture_broker: Arc<CaptureBroker>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut tick = tokio::time::interval(agent_core::network::NETWORK_HEARTBEAT_INTERVAL);
@@ -1475,6 +1554,9 @@ async fn serve_heartbeat_loop(
             _ = health_tick.tick() => {
                 // P2-приоритет: отчёт уходит редко и не конкурирует с
                 // control-каналом и потоком экранов (spec T7 §4.3).
+                if !permitted(&authorization, transport::Permission::ViewClassroom, &teacher_session_id, "DEVICE_HEALTH_REPORT") {
+                    continue;
+                }
                 if let Some(report) = build_health_report(&capture_broker, &device_id, false).await {
                     enqueue(&outbound, OutboundPriority::Control, protocol::network::Envelope {
                         protocol_version: protocol::network::PROTOCOL_VERSION,
@@ -1541,6 +1623,9 @@ async fn serve_heartbeat_loop(
                             if let Some(value) = &mut subscription { value.refresh(now_unix_ms()); }
                         }
                         Some(protocol::network::envelope::Payload::StreamSubscribe(request)) => {
+                            if !permitted(&authorization, transport::Permission::ViewClassroom, &teacher_session_id, "STREAM_SUBSCRIBE") {
+                                continue;
+                            }
                             if request.device_id != device_id {
                                 tracing::warn!(requested_device_id = request.device_id, event = "STREAM_SUBSCRIPTION_REJECTED");
                                 continue;
@@ -1561,6 +1646,9 @@ async fn serve_heartbeat_loop(
                             tracing::info!(event = "STREAM_UNSUBSCRIBED");
                         }
                         Some(protocol::network::envelope::Payload::ScreenshotRequest(request)) => {
+                            if !permitted(&authorization, transport::Permission::ViewClassroom, &teacher_session_id, "SCREENSHOT_REQUEST") {
+                                continue;
+                            }
                             let payload = if request.device_id != device_id {
                                 protocol::network::envelope::Payload::CaptureError(protocol::network::CaptureError {
                                     code: "DEVICE_MISMATCH".to_owned(), message: "запрос предназначен другому устройству".to_owned(),
@@ -1587,6 +1675,9 @@ async fn serve_heartbeat_loop(
                             })?;
                         }
                         Some(protocol::network::envelope::Payload::HealthRequest(request)) => {
+                            if !permitted(&authorization, transport::Permission::ViewClassroom, &teacher_session_id, "HEALTH_REQUEST") {
+                                continue;
+                            }
                             if request.device_id != device_id {
                                 tracing::warn!(requested_device_id = request.device_id, event = "HEALTH_REQUEST_REJECTED");
                                 continue;
@@ -1604,7 +1695,24 @@ async fn serve_heartbeat_loop(
                         }
                         Some(protocol::network::envelope::Payload::Command(command)) => {
                             let command_id = command.command_id.clone();
-                            let result = match capture_broker.admit_command(
+                            // Отказ по правам возвращается результатом, а не
+                            // молчанием: преподаватель ждёт ответ на команду.
+                            let denied = command
+                                .body
+                                .as_ref()
+                                .map(required_permission)
+                                .filter(|permission| {
+                                    !permitted(&authorization, *permission, &teacher_session_id, "CLASSROOM_COMMAND")
+                                })
+                                .is_some();
+                            let result = if denied {
+                                command_result(
+                                    command_id.clone(),
+                                    false,
+                                    "PERMISSION_DENIED",
+                                    "текущий lease не даёт права на это действие",
+                                )
+                            } else { match capture_broker.admit_command(
                                 &command_id,
                                 command.expires_at_unix_ms,
                             ) {
@@ -1639,7 +1747,7 @@ async fn serve_heartbeat_loop(
                                     "COMMAND_EXPIRED",
                                     "срок действия команды истёк или идентификатор пуст",
                                 ),
-                            };
+                            } };
                             tracing::info!(teacher_session_id = %teacher_session_id, command_id = %result.command_id, success = result.success, error_code = %result.error_code, action = "CLASSROOM_COMMAND", event = "AUDIT");
                             enqueue(&outbound, OutboundPriority::Control, protocol::network::Envelope {
                                 protocol_version: protocol::network::PROTOCOL_VERSION,
@@ -1649,6 +1757,9 @@ async fn serve_heartbeat_loop(
                             })?;
                         }
                         Some(protocol::network::envelope::Payload::RemoteControlStart(request)) => {
+                            if !permitted(&authorization, transport::Permission::ControlClassroom, &teacher_session_id, "REMOTE_CONTROL_STARTED") {
+                                continue;
+                            }
                             let session_id = new_message_id();
                             let payload = if request.device_id != device_id {
                                 tracing::info!(teacher_session_id = %teacher_session_id, requested_device_id = %request.device_id, action = "REMOTE_CONTROL_STARTED", result = "DENIED", reason = "device_mismatch", event = "AUDIT");

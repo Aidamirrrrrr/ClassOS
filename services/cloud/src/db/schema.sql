@@ -5,6 +5,10 @@
 -- сертификат и его отпечаток. Колонки для приватного ключа нет намеренно —
 -- её отсутствие является частью контракта, а не упущением.
 
+-- citext даёт регистронезависимую уникальность email без отдельного индекса
+-- по lower(email). Расширение обязано существовать до создания таблиц.
+CREATE EXTENSION IF NOT EXISTS citext;
+
 CREATE TABLE organizations (
     id              uuid PRIMARY KEY,
     name            text NOT NULL,
@@ -18,6 +22,17 @@ CREATE TABLE users (
     display_name    text NOT NULL,
     created_at      timestamptz NOT NULL DEFAULT now()
 );
+
+-- Сессии хранятся хешем токена: дамп таблицы не должен давать вход в систему
+-- (spec T8 §12.1). Сам токен существует только у клиента.
+CREATE TABLE sessions (
+    token_hash      bytea PRIMARY KEY,
+    user_id         uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at      timestamptz NOT NULL,
+    created_at      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX sessions_user ON sessions (user_id);
 
 CREATE TABLE branches (
     id              uuid PRIMARY KEY,

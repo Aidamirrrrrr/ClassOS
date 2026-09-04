@@ -61,6 +61,24 @@ pub fn teacher_issuer_key_path() -> PathBuf {
         .join("teacher-issuer-public-key.bin")
 }
 
+/// Путь к публичному ключу издателя classroom lease.
+///
+/// Существует только у устройства, зарегистрированного через Cloud: его
+/// наличие переводит устройство в режим обязательной проверки прав
+/// (ADR-0016).
+pub fn lease_issuer_key_path() -> PathBuf {
+    PathBuf::from(PROGRAM_DATA_DIR)
+        .join("state")
+        .join("lease-issuer-public-key.bin")
+}
+
+/// Путь к идентификатору кабинета, назначенного устройству при enrollment.
+pub fn room_id_path() -> PathBuf {
+    PathBuf::from(PROGRAM_DATA_DIR)
+        .join("state")
+        .join("room-id")
+}
+
 /// Путь к сохранённому состоянию политики T6.
 pub fn policy_state_path() -> PathBuf {
     PathBuf::from(PROGRAM_DATA_DIR)

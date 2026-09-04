@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import { bearerToken, createSession, hashToken, sessionIsValid, verifyPassword } from "../domain/auth";
 import { auditEvent } from "../domain/audit";
 import { checkCode, hashCode, issueToken } from "../domain/enrollment";
-import { issueLease, type LeasePermission } from "../domain/lease";
+import { issueLease, publicKeyFromSeed, type LeasePermission } from "../domain/lease";
 import { authorize, type Permission } from "../domain/rbac";
 import { toManifest, updateFor, type Channel } from "../domain/updates";
 import type { Membership, Store } from "../db/store";
@@ -227,7 +227,13 @@ export function createApp(deps: AppDeps) {
         // бессрочным пропуском (spec T8 §7).
         expiresAtUnixMs: issuedAt + 12 * 60 * 60 * 1000,
       });
-      return json(signed);
+      // Публичный ключ издателя отдаётся вместе с lease: он не секрет и
+      // позволяет консоли убедиться, что lease выдан тем же Cloud, который
+      // зарегистрировал устройства.
+      return json({
+        ...signed,
+        issuer_public_key: Buffer.from(publicKeyFromSeed(deps.leaseIssuerSeed)).toString("hex"),
+      });
     }
 
     // --- обновления -------------------------------------------------------
@@ -343,6 +349,17 @@ export function enrollmentHandler(deps: AppDeps) {
         nowUnixMs: now(),
       }),
     );
-    return json({ device_id: deviceId, branch_id: check.token.branchId }, 201);
+    // Кабинет и публичный ключ издателя lease нужны устройству, чтобы
+    // перейти в режим обязательной проверки прав (ADR-0016). Приватный ключ
+    // остаётся в Cloud.
+    return json(
+      {
+        device_id: deviceId,
+        branch_id: check.token.branchId,
+        room_id: check.token.roomId,
+        lease_issuer_public_key: Buffer.from(publicKeyFromSeed(deps.leaseIssuerSeed)).toString("hex"),
+      },
+      201,
+    );
   };
 }

@@ -16,12 +16,19 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use transport::{
-    build_teacher_hello, discovery, DeviceCredential, DeviceTransport, TeacherAuthority, TlsClient,
+    build_teacher_hello, discovery, DeviceCredential, DeviceTransport, SignedLease,
+    TeacherAuthority, TlsClient,
 };
 use uuid::Uuid;
 
 struct AppState {
     authority: Mutex<TeacherAuthority>,
+    /// Classroom lease, выданный Cloud текущему преподавателю (ADR-0016).
+    ///
+    /// Пусто, пока Cloud не настроен: устройства из локального enrollment
+    /// (ADR-0007) lease не требуют, а cloud-enrolled устройство без него
+    /// откажет в подключении — и это правильное поведение, а не ошибка UI.
+    lease: Mutex<Option<SignedLease>>,
     enrollment: Mutex<EnrollmentAuthority>,
     devices: Mutex<HashMap<String, EnrolledDevice>>,
     frames: Arc<Mutex<HashMap<String, StoredFrame>>>,
@@ -268,6 +275,11 @@ async fn enroll_device(
             issued_credential,
             issuer_public_key_der: issuer_public_key,
             expires_at_unix_ms: expires,
+            // Локальный enrollment (ADR-0007) не является Cloud и не выдаёт
+            // classroom lease: устройство остаётся в прежнем режиме
+            // авторизации, и притворяться иначе нельзя.
+            lease_issuer_public_key: Vec::new(),
+            room_id: String::new(),
         })),
     };
     connection
@@ -324,6 +336,7 @@ async fn request_health(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "устройство закрыло соединение".to_owned())?;
+    let lease = current_lease(&state);
     let teacher_hello = {
         let authority = state.authority.lock().map_err(|_| "состояние занято")?;
         build_teacher_hello(
@@ -332,6 +345,7 @@ async fn request_health(
             format!("teacher-{}", now_ms()),
             format!("hello-{}", now_ms()),
             now_ms(),
+            lease.as_ref(),
         )
     };
     connection
@@ -444,6 +458,7 @@ async fn request_screenshot(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "устройство закрыло соединение".to_owned())?;
+    let lease = current_lease(&state);
     let teacher_hello = {
         let authority = state.authority.lock().map_err(|_| "состояние занято")?;
         build_teacher_hello(
@@ -452,6 +467,7 @@ async fn request_screenshot(
             format!("teacher-{}", now_ms()),
             format!("hello-{}", now_ms()),
             now_ms(),
+            lease.as_ref(),
         )
     };
     connection
@@ -501,6 +517,7 @@ async fn start_stream(
     device_id: String,
     selected: bool,
 ) -> Result<String, String> {
+    let lease = current_lease(&state);
     let (credential, fingerprint, ip, control_port, authority_secret) = {
         let devices = state.devices.lock().map_err(|_| "состояние занято")?;
         let device = devices
@@ -545,6 +562,7 @@ async fn start_stream(
                 format!("teacher-{}", now_ms()),
                 format!("hello-{}", now_ms()),
                 now_ms(),
+                lease.as_ref(),
             );
             connection
                 .send(&teacher_hello)
@@ -725,6 +743,7 @@ async fn dispatch_command_to_device(
     device_id: String,
     device: EnrolledDevice,
     authority_secret: [u8; 32],
+    lease: Option<SignedLease>,
     kind: String,
     value: String,
 ) -> CommandResultView {
@@ -757,6 +776,7 @@ async fn dispatch_command_to_device(
                 format!("teacher-{}", now_ms()),
                 format!("hello-{}", now_ms()),
                 now_ms(),
+                lease.as_ref(),
             ))
             .await
             .map_err(|error| error.to_string())?;
@@ -819,6 +839,7 @@ async fn dispatch_classroom_command(
     }
     // Ранняя проверка формы команды, чтобы не рассылать заведомо неверную.
     command_body(&kind, &value, "validation")?;
+    let lease = current_lease(&state);
     let (devices, authority_secret) = {
         let stored = state.devices.lock().map_err(|_| "состояние занято")?;
         let devices = device_ids
@@ -834,6 +855,7 @@ async fn dispatch_classroom_command(
             device_id,
             device,
             authority_secret,
+            lease.clone(),
             kind.clone(),
             value.clone(),
         ));
@@ -861,6 +883,7 @@ async fn start_remote_control(state: State<'_, AppState>, device_id: String) -> 
             authority.secret_bytes(),
         )
     };
+    let lease = current_lease(&state);
     let cancellation = CancellationToken::new();
     let (sender, mut receiver) = mpsc::unbounded_channel::<Envelope>();
     let (ready_tx, ready_rx) = oneshot::channel();
@@ -874,7 +897,7 @@ async fn start_remote_control(state: State<'_, AppState>, device_id: String) -> 
             let mut connection = client.connect(address).await.map_err(|error| error.to_string())?;
             connection.recv().await.map_err(|error| error.to_string())?.ok_or_else(|| "устройство закрыло соединение".to_owned())?;
             let authority = TeacherAuthority::from_secret(&secret);
-            connection.send(&build_teacher_hello(&authority, &credential, format!("teacher-{}", now_ms()), format!("hello-{}", now_ms()), now_ms())).await.map_err(|error| error.to_string())?;
+            connection.send(&build_teacher_hello(&authority, &credential, format!("teacher-{}", now_ms()), format!("hello-{}", now_ms()), now_ms(), lease.as_ref())).await.map_err(|error| error.to_string())?;
             connection.recv().await.map_err(|error| error.to_string())?.ok_or_else(|| "устройство не подтвердило авторизацию".to_owned())?;
             connection.send(&Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: format!("remote-start-{}", now_ms()), timestamp_ms: now_ms(), payload: Some(envelope::Payload::RemoteControlStart(protocol::network::RemoteControlStart { device_id: task_device_id.clone() })) }).await.map_err(|error| error.to_string())?;
             match connection.recv().await.map_err(|error| error.to_string())?.and_then(|message| message.payload) {
@@ -1018,6 +1041,14 @@ fn send_remote_key(
     )
 }
 
+/// Текущий lease преподавателя, если Cloud его выдал.
+///
+/// Отсутствие lease — не ошибка на стороне консоли: решение о том, обязателен
+/// ли он, принимает устройство (ADR-0016).
+fn current_lease(state: &AppState) -> Option<SignedLease> {
+    state.lease.lock().ok().and_then(|value| value.clone())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Явный выбор провайдера rustls до первого TLS-соединения: полагаться на
@@ -1030,6 +1061,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState {
             authority: Mutex::new(load_authority()),
+            lease: Mutex::new(None),
             enrollment: Mutex::new(EnrollmentAuthority::default()),
             devices: Mutex::new(HashMap::new()),
             frames,

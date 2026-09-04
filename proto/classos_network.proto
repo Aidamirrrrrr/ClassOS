@@ -63,6 +63,10 @@ message TeacherHello {
   uint32 max_protocol = 3;
   bytes authorization_credential = 4;
   bytes signature = 5;
+  // Подписанный Cloud classroom lease (ADR-0016). Пусто допустимо только для
+  // устройства, зарегистрированного локально по ADR-0007: устройство,
+  // получившее при enrollment ключ issuer, требует lease обязательно.
+  bytes classroom_lease = 6;
 }
 
 // Запрос локального enrollment. Публичный ключ передаётся в формате DER.
@@ -82,6 +86,11 @@ message EnrollmentResult {
   bytes issued_credential = 3;
   bytes issuer_public_key_der = 4;
   int64 expires_at_unix_ms = 5;
+  // Публичный ключ издателя classroom lease (32 байта) и кабинет устройства.
+  // Заполняются только Cloud: их наличие переводит устройство в режим
+  // обязательной проверки прав по lease (ADR-0016).
+  bytes lease_issuer_public_key = 6;
+  string room_id = 7;
 }
 
 // Минимальный живой статус устройства в рамках T1.
