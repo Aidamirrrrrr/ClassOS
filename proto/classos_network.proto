@@ -39,6 +39,9 @@ message Envelope {
     RemoteInputEvent remote_input_event = 26;
     Command command = 27;
     CommandResult command_result = 28;
+    HealthRequest health_request = 29;
+    DeviceHealthReport device_health_report = 30;
+    RepairResult repair_result = 31;
   }
 }
 
@@ -179,6 +182,7 @@ message Command {
     RollbackPolicy rollback_policy = 18;
     FocusModeEnable focus_mode_enable = 19;
     FocusModeDisable focus_mode_disable = 20;
+    RepairDesiredState repair_desired_state = 21;
   }
 }
 
@@ -200,6 +204,70 @@ message ApplyPolicy { string policy_id = 1; bytes compiled_policy = 2; }
 message RollbackPolicy { string snapshot_id = 1; }
 message FocusModeEnable { repeated string allowed_application_ids = 1; }
 message FocusModeDisable {}
+
+// Приведение устройства к desired state профиля. Repair не выходит за пределы
+// явно указанного profile_id (spec T7 §10.4).
+message RepairDesiredState {
+  string device_id = 1;
+  string profile_id = 2;
+}
+
+message RepairItemResult {
+  string application_id = 1;
+  bool success = 2;
+  string error_code = 3;
+}
+
+message RepairResult {
+  string device_id = 1;
+  repeated RepairItemResult items = 2;
+}
+
+// Явный запрос отчёта о состоянии устройства вне периодической отправки.
+message HealthRequest { string device_id = 1; }
+
+enum DeviceHealthState {
+  DEVICE_HEALTH_STATE_UNSPECIFIED = 0;
+  DEVICE_HEALTH_STATE_HEALTHY = 1;
+  DEVICE_HEALTH_STATE_WARNING = 2;
+  DEVICE_HEALTH_STATE_CRITICAL = 3;
+}
+
+// Состояние устройства. Предупреждения — machine-readable коды, а не
+// свободный текст (spec T7 §10.3).
+message DeviceHealthReport {
+  string device_id = 1;
+  DeviceHealthState state = 2;
+  double cpu_percent = 3;
+  double ram_percent = 4;
+  double disk_percent = 5;
+  string os_version = 6;
+  string agent_version = 7;
+  repeated string warnings = 8;
+  int64 reported_at_unix_ms = 9;
+  int64 uptime_seconds = 10;
+  repeated InstalledApplication software = 11;
+  repeated SoftwareDrift drift = 12;
+  string profile_id = 13;
+}
+
+message InstalledApplication {
+  string application_id = 1;
+  string version = 2;
+}
+
+enum DriftKind {
+  DRIFT_KIND_UNSPECIFIED = 0;
+  DRIFT_KIND_MISSING = 1;
+  DRIFT_KIND_VERSION_MISMATCH = 2;
+}
+
+message SoftwareDrift {
+  string application_id = 1;
+  DriftKind kind = 2;
+  string required_version = 3;
+  string actual_version = 4;
+}
 
 enum EnrollmentErrorCode {
   ENROLLMENT_ERROR_CODE_UNSPECIFIED = 0;

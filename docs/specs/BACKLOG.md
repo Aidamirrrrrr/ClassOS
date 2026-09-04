@@ -19,7 +19,7 @@
 | T5 — Classroom Commands + Bulk Actions | spec-ready | done | not started | [T5_CLASSROOM_COMMANDS_SPEC.md](T5_CLASSROOM_COMMANDS_SPEC.md) |
 | T6 — Policy Engine + Focus Mode | spec-ready | done | not started | [T6_POLICY_ENGINE_FOCUS_MODE_SPEC.md](T6_POLICY_ENGINE_FOCUS_MODE_SPEC.md) |
 | — CHECKPOINT #2 demo | — | — | — | `product/03_EXECUTION_PLAN_90_DAYS.md` §22 |
-| T7 — Device Health & Software Management | spec-ready | not started | not started | [T7_DEVICE_HEALTH_SOFTWARE_SPEC.md](T7_DEVICE_HEALTH_SOFTWARE_SPEC.md) |
+| T7 — Device Health & Software Management | spec-ready | done | not started | [T7_DEVICE_HEALTH_SOFTWARE_SPEC.md](T7_DEVICE_HEALTH_SOFTWARE_SPEC.md) |
 | T8 — Installer, Updater, Cloud v0 | spec-ready | not started | not started | [T8_INSTALLER_UPDATER_CLOUD_V0_SPEC.md](T8_INSTALLER_UPDATER_CLOUD_V0_SPEC.md) |
 | — Technical MVP complete / Go-No-Go #2 | — | — | — | `product/03_EXECUTION_PLAN_90_DAYS.md` §66–68 |
 | Phase A — Lesson Engine | not started (overview only) | not started | not started | [FUTURE_PHASES_OVERVIEW.md](FUTURE_PHASES_OVERVIEW.md) |
@@ -35,6 +35,7 @@
 1. Milestone не начинается в коде, пока его строка не `spec-ready`.
 2. Impl переходит в `done`, когда код, автоматические тесты, lint, Windows cross-check и cross-build завершены. Непройденная проверка на реальной машине отражается отдельно и явно в `Runtime validation`.
 3. Допускается начинать следующий технический milestone при `Impl: done` и `Runtime validation: CI only`, если непроверенные сценарии перечислены в README соответствующего milestone. Это не разрешает называть их проверенными.
+   - **Исключение, действующее сейчас:** T7 и T8 начаты по явному разрешению владельца проекта при `Runtime validation: not started` у T6. Правило не отменено: долг по реальной приёмке T0–T8 накапливается и остаётся обязательным перед пилотом. Каждый milestone, начатый по этому исключению, отмечает его в своём README.
 4. Обязательные реальные контрольные точки: T0; связка T2–T4; полный прогон перед пилотом. Накопление кода не отменяет более ранние acceptance tests.
 5. Gate-проверки CHECKPOINT #1/#2 и Go/No-Go остаются обязательными продуктовыми точками паузы.
 6. При создании нового spec для Phase A–G — добавить отдельную строку с реальным именем файла (`NN_..._SPEC.md`), а не оставлять ссылку на `FUTURE_PHASES_OVERVIEW.md`.

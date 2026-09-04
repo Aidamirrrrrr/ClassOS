@@ -20,7 +20,7 @@ pub struct DeviceCatalog;
 
 impl ApplicationCatalog for DeviceCatalog {
     fn resolve(&self, application_id: &str) -> Option<String> {
-        catalog_application(application_id).map(|value| value.executable().to_owned())
+        catalog_application(application_id).map(|value| value.primary_executable().to_owned())
     }
 }
 

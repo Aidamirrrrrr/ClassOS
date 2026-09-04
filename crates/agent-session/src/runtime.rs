@@ -152,7 +152,7 @@ fn execute_session_command(
                     )),
                 );
             };
-            Command::new(application.executable())
+            Command::new(application.primary_executable())
                 .spawn()
                 .map(|_| ())
                 .map_err(|error| ("APPLICATION_LAUNCH_FAILED", error.to_string()))

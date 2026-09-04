@@ -291,6 +291,10 @@ pub mod network {
                     allowed_application_ids: vec!["vscode".to_owned(), "python".to_owned()],
                 }),
                 command::Body::FocusModeDisable(FocusModeDisable {}),
+                command::Body::RepairDesiredState(RepairDesiredState {
+                    device_id: "device-1".to_owned(),
+                    profile_id: "python-classroom".to_owned(),
+                }),
             ];
             for body in bodies {
                 let envelope = Envelope {
@@ -308,6 +312,70 @@ pub mod network {
                     envelope
                 );
             }
+        }
+
+        #[test]
+        fn health_report_round_trip_preserves_metrics_and_drift() {
+            let envelope = Envelope {
+                protocol_version: PROTOCOL_VERSION,
+                message_id: "health-1".to_owned(),
+                timestamp_ms: 7,
+                payload: Some(envelope::Payload::DeviceHealthReport(DeviceHealthReport {
+                    device_id: "device-1".to_owned(),
+                    state: DeviceHealthState::Warning as i32,
+                    cpu_percent: 12.5,
+                    ram_percent: 61.25,
+                    disk_percent: 93.5,
+                    os_version: "Windows 11 23H2".to_owned(),
+                    agent_version: "0.1.0".to_owned(),
+                    warnings: vec!["DISK_SPACE_LOW".to_owned(), "SOFTWARE_MISSING".to_owned()],
+                    reported_at_unix_ms: 1_700_000_000_000,
+                    uptime_seconds: 4_321,
+                    software: vec![InstalledApplication {
+                        application_id: "python".to_owned(),
+                        version: "3.13.2".to_owned(),
+                    }],
+                    drift: vec![SoftwareDrift {
+                        application_id: "chrome".to_owned(),
+                        kind: DriftKind::Missing as i32,
+                        required_version: String::new(),
+                        actual_version: String::new(),
+                    }],
+                    profile_id: "python-classroom".to_owned(),
+                })),
+            };
+            assert_eq!(
+                Envelope::decode(envelope.encode_to_vec().as_slice()).unwrap(),
+                envelope
+            );
+        }
+
+        #[test]
+        fn repair_result_round_trip_preserves_per_package_outcome() {
+            let envelope = Envelope {
+                protocol_version: PROTOCOL_VERSION,
+                message_id: "repair-1".to_owned(),
+                timestamp_ms: 9,
+                payload: Some(envelope::Payload::RepairResult(RepairResult {
+                    device_id: "device-1".to_owned(),
+                    items: vec![
+                        RepairItemResult {
+                            application_id: "python".to_owned(),
+                            success: true,
+                            error_code: String::new(),
+                        },
+                        RepairItemResult {
+                            application_id: "chrome".to_owned(),
+                            success: false,
+                            error_code: "PACKAGE_OPERATION_FAILED".to_owned(),
+                        },
+                    ],
+                })),
+            };
+            assert_eq!(
+                Envelope::decode(envelope.encode_to_vec().as_slice()).unwrap(),
+                envelope
+            );
         }
     }
 }

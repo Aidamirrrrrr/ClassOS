@@ -16,6 +16,7 @@ dependencies = [
  "policy-engine",
  "protocol",
  "serde",
+ "software-manager",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
@@ -3682,6 +3683,13 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "software-manager"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.20",
 ]
 
 [[package]]

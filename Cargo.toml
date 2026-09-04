@@ -11,6 +11,8 @@ members = [
     "crates/remote-input",
     "crates/windows-platform",
     "crates/policy-engine",
+    "crates/device-health",
+    "crates/software-manager",
 ]
 
 [workspace.package]

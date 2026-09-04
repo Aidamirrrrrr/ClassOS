@@ -30,6 +30,7 @@ use windows_service::service::{
 };
 use windows_service::service_control_handler::ServiceStatusHandle;
 
+use crate::health::HealthCollector;
 use crate::ipc::PipeConnection;
 use crate::policy_controller::PolicyController;
 use crate::windows_adapters::{
@@ -39,6 +40,10 @@ use crate::windows_adapters::{
 use windows_platform::power::{PowerAction, execute_power_action};
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Периодичность health-отчёта. Реже, чем heartbeat: отчёт нужен для
+/// дашборда, а не для определения online-состояния.
+const HEALTH_REPORT_INTERVAL: Duration = Duration::from_secs(60);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
 const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(3);
@@ -81,6 +86,11 @@ struct CaptureBroker {
     /// работать: урок не должен останавливаться из-за недоступного enforcement,
     /// но и делать вид, что политика применена, она не будет.
     policy: Option<PolicyController>,
+    health: Option<Arc<HealthCollector>>,
+    /// Последнее применение политики завершилось ошибкой. Health обязан
+    /// показывать это состояние: устройство с несработавшей политикой не
+    /// является исправным (spec T7 §4.2).
+    policy_apply_failed: std::sync::atomic::AtomicBool,
 }
 
 impl CaptureBroker {
@@ -318,6 +328,127 @@ fn command_result(
     }
 }
 
+/// Собирает health-отчёт на blocking-пуле: чтение метрик и инвентаря — это
+/// синхронные системные вызовы, а при принудительном обновлении ещё и winget.
+async fn build_health_report(
+    capture_broker: &Arc<CaptureBroker>,
+    device_id: &str,
+    force_inventory: bool,
+) -> Option<protocol::network::DeviceHealthReport> {
+    let health = capture_broker.health.clone()?;
+    let policy_failed = capture_broker
+        .policy_apply_failed
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let no_session = capture_broker
+        .current
+        .lock()
+        .map(|current| current.is_none())
+        .unwrap_or(true);
+    let device_id = device_id.to_owned();
+    match tokio::task::spawn_blocking(move || {
+        health.report(&device_id, policy_failed, no_session, force_inventory)
+    })
+    .await
+    {
+        Ok(report) => Some(report),
+        Err(error) => {
+            tracing::warn!(error = %error, event = "HEALTH_REPORT_FAILED");
+            None
+        }
+    }
+}
+
+/// Repair: приведение устройства к desired state профиля.
+///
+/// Вынесен из общего маршрута команд, потому что единственный возвращает
+/// детализацию по каждому пакету и выполняется минутами, а не миллисекундами.
+async fn execute_repair_command(
+    command_id: String,
+    request: protocol::network::RepairDesiredState,
+    capture_broker: &CaptureBroker,
+    device_id: &str,
+) -> (
+    protocol::network::CommandResult,
+    Option<protocol::network::RepairResult>,
+) {
+    let Some(health) = capture_broker.health.clone() else {
+        return (
+            command_result(
+                command_id,
+                false,
+                "SOFTWARE_UNAVAILABLE",
+                "software management недоступен на этом устройстве",
+            ),
+            None,
+        );
+    };
+    if request.device_id != device_id {
+        return (
+            command_result(
+                command_id,
+                false,
+                "DEVICE_MISMATCH",
+                "команда предназначена другому устройству",
+            ),
+            None,
+        );
+    }
+
+    // Установка пакетов обязана уйти с event loop, иначе класс потеряет
+    // стрим и heartbeat на всё время работы winget.
+    let profile_id = request.profile_id.clone();
+    match tokio::task::spawn_blocking(move || health.repair(&profile_id)).await {
+        Ok(Ok(items)) => {
+            let failed: Vec<&software_manager::RepairItem> =
+                items.iter().filter(|item| !item.success).collect();
+            let message = if failed.is_empty() {
+                format!("приведено к профилю: {}", items.len())
+            } else {
+                format!(
+                    "не удалось: {}",
+                    failed
+                        .iter()
+                        .map(|item| format!("{}={}", item.application_id, item.error_code))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            let success = failed.is_empty();
+            (
+                command_result(
+                    command_id,
+                    success,
+                    if success {
+                        ""
+                    } else {
+                        "REPAIR_PARTIAL_FAILURE"
+                    },
+                    message,
+                ),
+                Some(protocol::network::RepairResult {
+                    device_id: device_id.to_owned(),
+                    items: items
+                        .into_iter()
+                        .map(|item| protocol::network::RepairItemResult {
+                            application_id: item.application_id,
+                            success: item.success,
+                            error_code: item.error_code,
+                        })
+                        .collect(),
+                }),
+            )
+        }
+        Ok(Err(error)) => (
+            command_result(command_id, false, error.code(), error.to_string()),
+            None,
+        ),
+        Err(error) => (
+            command_result(command_id, false, "REPAIR_TASK_FAILED", error.to_string()),
+            None,
+        ),
+    }
+}
+
 /// Честный отказ вместо видимости применённой политики (ADR-0014).
 fn policy_unavailable(command_id: String) -> protocol::network::CommandResult {
     command_result(
@@ -416,10 +547,16 @@ async fn execute_classroom_command(
                         policy_name = outcome.policy_name,
                         snapshot_id = outcome.snapshot_id,
                     );
+                    capture_broker
+                        .policy_apply_failed
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
                     command_result(command_id, true, "", outcome.policy_name)
                 }
                 Err(error) => {
                     tracing::warn!(event = "POLICY_APPLY_FAILED", error = %error);
+                    capture_broker
+                        .policy_apply_failed
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
                     command_result(command_id, false, error.code(), error.to_string())
                 }
             };
@@ -456,6 +593,9 @@ async fn execute_classroom_command(
                 }
                 Err(error) => {
                     tracing::warn!(event = "FOCUS_MODE_FAILED", error = %error);
+                    capture_broker
+                        .policy_apply_failed
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
                     command_result(command_id, false, error.code(), error.to_string())
                 }
             };
@@ -474,6 +614,9 @@ async fn execute_classroom_command(
                 }
                 Err(error) => {
                     tracing::warn!(event = "FOCUS_MODE_FAILED", error = %error);
+                    capture_broker
+                        .policy_apply_failed
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
                     command_result(command_id, false, error.code(), error.to_string())
                 }
             };
@@ -484,6 +627,16 @@ async fn execute_classroom_command(
                 false,
                 "COMMAND_UNSUPPORTED",
                 "отсутствует действие команды",
+            );
+        }
+        // Repair обрабатывается отдельно: он единственный возвращает
+        // детализацию по каждому пакету и выполняется минутами, а не мс.
+        Some(NetworkBody::RepairDesiredState(_)) => {
+            return command_result(
+                command_id,
+                false,
+                "COMMAND_UNSUPPORTED",
+                "repair обрабатывается отдельным маршрутом",
             );
         }
     };
@@ -881,8 +1034,10 @@ pub async fn run(
             None
         }
     };
+    let config = agent_core::config::AgentConfig::load().unwrap_or_default();
     let capture_broker = Arc::new(CaptureBroker {
         policy,
+        health: Some(Arc::new(HealthCollector::new(config.software_profile_id))),
         ..CaptureBroker::default()
     });
     match agent_core::config::load_or_create_device_id(&agent_core::config::device_id_path()) {
@@ -1191,6 +1346,8 @@ async fn serve_heartbeat_loop(
     capture_broker: Arc<CaptureBroker>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut tick = tokio::time::interval(agent_core::network::NETWORK_HEARTBEAT_INTERVAL);
+    let mut health_tick = tokio::time::interval(HEALTH_REPORT_INTERVAL);
+    health_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut stream_tick = tokio::time::interval(Duration::from_millis(50));
     stream_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut last_seen = std::time::Instant::now();
@@ -1216,6 +1373,18 @@ async fn serve_heartbeat_loop(
                         sequence: last_seen.elapsed().as_secs(), sent_at_unix_ms: now_unix_ms(),
                     })),
                 }).await?;
+            }
+            _ = health_tick.tick() => {
+                // P2-приоритет: отчёт уходит редко и не конкурирует с
+                // control-каналом и потоком экранов (spec T7 §4.3).
+                if let Some(report) = build_health_report(&capture_broker, &device_id, false).await {
+                    connection.send(&protocol::network::Envelope {
+                        protocol_version: protocol::network::PROTOCOL_VERSION,
+                        message_id: new_message_id(),
+                        timestamp_ms: now_unix_ms(),
+                        payload: Some(protocol::network::envelope::Payload::DeviceHealthReport(report)),
+                    }).await?;
+                }
             }
             _ = stream_tick.tick() => {
                 let Some(clock) = &mut frame_clock else { continue; };
@@ -1313,6 +1482,22 @@ async fn serve_heartbeat_loop(
                                 payload: Some(payload),
                             }).await?;
                         }
+                        Some(protocol::network::envelope::Payload::HealthRequest(request)) => {
+                            if request.device_id != device_id {
+                                tracing::warn!(requested_device_id = request.device_id, event = "HEALTH_REQUEST_REJECTED");
+                                continue;
+                            }
+                            // Явный запрос обновляет инвентарь принудительно:
+                            // администратор нажал кнопку и ждёт свежие данные.
+                            if let Some(report) = build_health_report(&capture_broker, &device_id, true).await {
+                                connection.send(&protocol::network::Envelope {
+                                    protocol_version: protocol::network::PROTOCOL_VERSION,
+                                    message_id: new_message_id(),
+                                    timestamp_ms: now_unix_ms(),
+                                    payload: Some(protocol::network::envelope::Payload::DeviceHealthReport(report)),
+                                }).await?;
+                            }
+                        }
                         Some(protocol::network::envelope::Payload::Command(command)) => {
                             let command_id = command.command_id.clone();
                             let result = match capture_broker.admit_command(
@@ -1320,8 +1505,21 @@ async fn serve_heartbeat_loop(
                                 command.expires_at_unix_ms,
                             ) {
                                 CommandAdmission::Execute => {
-                                    let result = execute_classroom_command(command, &capture_broker).await;
+                                    let (result, repair) = match command.body {
+                                        Some(protocol::network::command::Body::RepairDesiredState(request)) => {
+                                            execute_repair_command(command_id.clone(), request, &capture_broker, &device_id).await
+                                        }
+                                        _ => (execute_classroom_command(command, &capture_broker).await, None),
+                                    };
                                     capture_broker.complete_command(&command_id, result.clone());
+                                    if let Some(repair) = repair {
+                                        connection.send(&protocol::network::Envelope {
+                                            protocol_version: protocol::network::PROTOCOL_VERSION,
+                                            message_id: new_message_id(),
+                                            timestamp_ms: now_unix_ms(),
+                                            payload: Some(protocol::network::envelope::Payload::RepairResult(repair)),
+                                        }).await?;
+                                    }
                                     result
                                 }
                                 CommandAdmission::Replay(result) => result,

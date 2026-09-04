@@ -13,6 +13,7 @@ pub mod error;
 pub mod handles;
 pub mod indicator;
 pub mod input;
+pub mod metrics;
 pub mod pipes;
 pub mod power;
 pub mod process;
@@ -20,5 +21,6 @@ pub mod registry;
 pub mod security;
 pub mod sessions;
 pub mod shell;
+pub mod winget;
 
 pub use error::{PlatformError, Result};

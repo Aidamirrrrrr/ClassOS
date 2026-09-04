@@ -17,3 +17,6 @@ input { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; pa
 .device-select { margin: 0; color: #334155; cursor: pointer; }
 .device-select input { display: inline; width: auto; margin: 0 6px 0 0; }
 .thumbnail { width: 100%; min-height: 96px; object-fit: contain; background: #111827; border-radius: 6px; }
+
+.health { width: 100%; border-collapse: collapse; margin-top: 0.75rem; font-size: 0.9rem; }
+.health th, .health td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #8883; }

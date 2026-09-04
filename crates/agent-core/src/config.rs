@@ -88,16 +88,25 @@ pub fn log_dir() -> PathBuf {
 pub struct AgentConfig {
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    /// Желаемый software-профиль кабинета. В T7 задаётся локально; реальная
+    /// привязка Room → профиль появляется вместе с Cloud v0 (T8).
+    #[serde(default = "default_software_profile")]
+    pub software_profile_id: String,
 }
 
 fn default_log_level() -> String {
     "info".to_string()
 }
 
+fn default_software_profile() -> String {
+    "python-classroom".to_string()
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             log_level: default_log_level(),
+            software_profile_id: default_software_profile(),
         }
     }
 }

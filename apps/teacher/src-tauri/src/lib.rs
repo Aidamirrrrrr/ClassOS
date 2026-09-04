@@ -71,6 +71,30 @@ struct CommandResultView {
     message: String,
 }
 
+#[derive(Debug, Serialize)]
+struct HealthView {
+    device_id: String,
+    state: String,
+    cpu_percent: f64,
+    ram_percent: f64,
+    disk_percent: f64,
+    os_version: String,
+    agent_version: String,
+    uptime_seconds: i64,
+    profile_id: String,
+    /// Машиночитаемые коды; человекочитаемый текст подбирает UI.
+    warnings: Vec<String>,
+    drift: Vec<DriftView>,
+}
+
+#[derive(Debug, Serialize)]
+struct DriftView {
+    application_id: String,
+    kind: String,
+    required_version: String,
+    actual_version: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct FrameReady {
     device_id: String,
@@ -264,6 +288,129 @@ async fn enroll_device(
             },
         );
     Ok("устройство успешно зарегистрировано".to_owned())
+}
+
+/// Запрашивает свежий health-отчёт устройства.
+///
+/// Отчёт приходит и периодически сам, но администратору нужна возможность
+/// нажать кнопку и увидеть актуальное состояние, а не ждать следующего тика.
+#[tauri::command]
+async fn request_health(
+    state: State<'_, AppState>,
+    device_id: String,
+) -> Result<HealthView, String> {
+    let (credential, fingerprint, ip, port) = {
+        let devices = state.devices.lock().map_err(|_| "состояние занято")?;
+        let device = devices
+            .get(&device_id)
+            .ok_or_else(|| "устройство ещё не зарегистрировано в этой сессии".to_owned())?;
+        (
+            device.credential.clone(),
+            device.fingerprint,
+            device.ip.clone(),
+            device.control_port,
+        )
+    };
+    let client = TlsClient::pinned(&device_id, fingerprint).map_err(|error| error.to_string())?;
+    let mut connection = client
+        .connect(SocketAddr::new(
+            ip.parse::<IpAddr>().map_err(|_| "некорректный IP-адрес")?,
+            port,
+        ))
+        .await
+        .map_err(|error| error.to_string())?;
+    connection
+        .recv()
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "устройство закрыло соединение".to_owned())?;
+    let teacher_hello = {
+        let authority = state.authority.lock().map_err(|_| "состояние занято")?;
+        build_teacher_hello(
+            &authority,
+            &credential,
+            format!("teacher-{}", now_ms()),
+            format!("hello-{}", now_ms()),
+            now_ms(),
+        )
+    };
+    connection
+        .send(&teacher_hello)
+        .await
+        .map_err(|error| error.to_string())?;
+    connection
+        .recv()
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "устройство не подтвердило авторизацию".to_owned())?;
+    connection
+        .send(&protocol::network::Envelope {
+            protocol_version: protocol::network::PROTOCOL_VERSION,
+            message_id: format!("health-{}", now_ms()),
+            timestamp_ms: now_ms(),
+            payload: Some(protocol::network::envelope::Payload::HealthRequest(
+                protocol::network::HealthRequest {
+                    device_id: device_id.clone(),
+                },
+            )),
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+
+    // Устройство может прислать heartbeat или кадр раньше отчёта: ждём именно
+    // отчёт, а не первое попавшееся сообщение.
+    for _ in 0..16 {
+        match connection
+            .recv()
+            .await
+            .map_err(|error| error.to_string())?
+            .and_then(|message| message.payload)
+        {
+            Some(protocol::network::envelope::Payload::DeviceHealthReport(report)) => {
+                return Ok(to_health_view(report));
+            }
+            Some(_) => continue,
+            None => break,
+        }
+    }
+    Err("устройство не прислало health-отчёт".to_owned())
+}
+
+fn to_health_view(report: protocol::network::DeviceHealthReport) -> HealthView {
+    let state = match protocol::network::DeviceHealthState::try_from(report.state) {
+        Ok(protocol::network::DeviceHealthState::Healthy) => "healthy",
+        Ok(protocol::network::DeviceHealthState::Warning) => "warning",
+        Ok(protocol::network::DeviceHealthState::Critical) => "critical",
+        _ => "unknown",
+    };
+    HealthView {
+        device_id: report.device_id,
+        state: state.to_owned(),
+        cpu_percent: report.cpu_percent,
+        ram_percent: report.ram_percent,
+        disk_percent: report.disk_percent,
+        os_version: report.os_version,
+        agent_version: report.agent_version,
+        uptime_seconds: report.uptime_seconds,
+        profile_id: report.profile_id,
+        warnings: report.warnings,
+        drift: report
+            .drift
+            .into_iter()
+            .map(|entry| DriftView {
+                kind: match protocol::network::DriftKind::try_from(entry.kind) {
+                    Ok(protocol::network::DriftKind::Missing) => "missing".to_owned(),
+                    Ok(protocol::network::DriftKind::VersionMismatch) => {
+                        "version_mismatch".to_owned()
+                    }
+                    _ => "unknown".to_owned(),
+                },
+                application_id: entry.application_id,
+                required_version: entry.required_version,
+                actual_version: entry.actual_version,
+            })
+            .collect(),
+    }
 }
 
 #[tauri::command]
@@ -514,7 +661,11 @@ fn lesson_profile(profile_id: &str) -> Option<policy_engine::LessonPolicy> {
     }
 }
 
-fn command_body(kind: &str, value: &str) -> Result<protocol::network::command::Body, String> {
+fn command_body(
+    kind: &str,
+    value: &str,
+    device_id: &str,
+) -> Result<protocol::network::command::Body, String> {
     use protocol::network::command::Body;
     match kind {
         "policy" => {
@@ -545,6 +696,12 @@ fn command_body(kind: &str, value: &str) -> Result<protocol::network::command::B
         "focus_off" => Ok(Body::FocusModeDisable(
             protocol::network::FocusModeDisable {},
         )),
+        "repair" if !value.is_empty() => Ok(Body::RepairDesiredState(
+            protocol::network::RepairDesiredState {
+                device_id: device_id.to_owned(),
+                profile_id: value.to_owned(),
+            },
+        )),
         "lock" => Ok(Body::LockDevice(protocol::network::LockDevice {})),
         "unlock" => Ok(Body::UnlockDevice(protocol::network::UnlockDevice {})),
         "message" if !value.is_empty() => Ok(Body::ShowMessage(protocol::network::ShowMessage {
@@ -573,7 +730,7 @@ async fn dispatch_command_to_device(
 ) -> CommandResultView {
     let command_id = Uuid::new_v4().to_string();
     let result: Result<protocol::network::CommandResult, String> = async {
-        let body = command_body(&kind, &value)?;
+        let body = command_body(&kind, &value, &device_id)?;
         let client =
             TlsClient::pinned(&device_id, device.fingerprint).map_err(|error| error.to_string())?;
         let address = SocketAddr::new(
@@ -660,7 +817,8 @@ async fn dispatch_classroom_command(
     if device_ids.is_empty() {
         return Err("не выбраны устройства".to_owned());
     }
-    command_body(&kind, &value)?;
+    // Ранняя проверка формы команды, чтобы не рассылать заведомо неверную.
+    command_body(&kind, &value, "validation")?;
     let (devices, authority_secret) = {
         let stored = state.devices.lock().map_err(|_| "состояние занято")?;
         let devices = device_ids
@@ -901,6 +1059,7 @@ pub fn run() {
             discover_device,
             enroll_device,
             request_screenshot,
+            request_health,
             start_stream,
             stop_stream,
             dispatch_classroom_command,

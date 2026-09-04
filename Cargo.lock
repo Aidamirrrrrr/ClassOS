@@ -10,6 +10,7 @@ dependencies = [
  "policy-engine",
  "protocol",
  "serde",
+ "software-manager",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -24,10 +25,12 @@ version = "0.1.0"
 dependencies = [
  "agent-core",
  "clap",
+ "device-health",
  "policy-engine",
  "protocol",
  "serde",
  "serde_json",
+ "software-manager",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -395,6 +398,13 @@ name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
+
+[[package]]
+name = "device-health"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "digest"
@@ -1205,6 +1215,13 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "software-manager"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
 ]
 
 [[package]]

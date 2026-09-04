@@ -7,32 +7,16 @@ use protocol::network::CommandResult;
 pub const COMMAND_CACHE_TTL_MS: i64 = 15 * 60 * 1000;
 const MAX_CACHED_COMMANDS: usize = 1_024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CatalogApplication {
-    VsCode,
-    Chrome,
-    Python,
-}
-
-impl CatalogApplication {
-    pub fn executable(self) -> &'static str {
-        match self {
-            Self::VsCode => "Code.exe",
-            Self::Chrome => "chrome.exe",
-            Self::Python => "python.exe",
-        }
-    }
-}
-
 /// Catalog намеренно принимает только фиксированные идентификаторы, а не путь
 /// или командную строку, пришедшие от Teacher Console.
-pub fn catalog_application(application_id: &str) -> Option<CatalogApplication> {
-    match application_id {
-        "vscode" => Some(CatalogApplication::VsCode),
-        "chrome" => Some(CatalogApplication::Chrome),
-        "python" => Some(CatalogApplication::Python),
-        _ => None,
-    }
+///
+/// Определения живут в `software-manager` и используются одновременно
+/// classroom-командами T5, компилятором политик T6 и software management T7 —
+/// параллельного списка приложений в системе нет (spec T7 §5).
+pub fn catalog_application(
+    application_id: &str,
+) -> Option<&'static software_manager::ApplicationDefinition> {
+    software_manager::definition(application_id)
 }
 
 pub fn is_allowed_url(url: &str) -> bool {
@@ -197,11 +181,11 @@ mod tests {
     #[test]
     fn catalog_never_resolves_arbitrary_executable_path() {
         assert_eq!(
-            catalog_application("vscode"),
-            Some(CatalogApplication::VsCode)
+            catalog_application("vscode").map(|value| value.primary_executable()),
+            Some("Code.exe")
         );
-        assert_eq!(catalog_application("C:\\Windows\\System32\\cmd.exe"), None);
-        assert_eq!(catalog_application("powershell"), None);
+        assert!(catalog_application("C:\\Windows\\System32\\cmd.exe").is_none());
+        assert!(catalog_application("powershell").is_none());
     }
 
     #[test]

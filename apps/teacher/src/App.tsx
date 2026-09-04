@@ -7,6 +7,32 @@ type Device = { device_id: string; hostname: string; ip: string; control_port: n
 type Code = { code: string; expires_at_unix_ms: number };
 type FrameReady = { device_id: string; sequence: number };
 type CommandResult = { device_id: string; command_id: string; success: boolean; error_code: string; message: string };
+type Drift = { application_id: string; kind: string; required_version: string; actual_version: string };
+type Health = {
+  device_id: string; state: string; cpu_percent: number; ram_percent: number; disk_percent: number;
+  os_version: string; agent_version: string; uptime_seconds: number; profile_id: string;
+  warnings: string[]; drift: Drift[];
+};
+
+// Устройство сообщает машиночитаемые коды; человекочитаемый текст —
+// ответственность UI, а не агента (spec T7 §10.3).
+const WARNING_TEXT: Record<string, string> = {
+  DISK_SPACE_LOW: "Мало места на диске",
+  DISK_SPACE_CRITICAL: "Диск почти заполнен",
+  MEMORY_PRESSURE: "Не хватает оперативной памяти",
+  CPU_SATURATED: "Процессор перегружен",
+  SOFTWARE_MISSING: "Не хватает программ по профилю",
+  SOFTWARE_VERSION_MISMATCH: "Версия программы не соответствует профилю",
+  POLICY_APPLY_FAILED: "Не удалось применить политику урока",
+  NO_INTERACTIVE_SESSION: "Никто не вошёл в систему",
+};
+
+const STATE_TEXT: Record<string, string> = {
+  healthy: "Исправен",
+  warning: "Требует внимания",
+  critical: "Проблема",
+  unknown: "Неизвестно",
+};
 
 function versionedUrl(url: string, sequence: number) {
   return `${url}?sequence=${sequence}`;
@@ -21,6 +47,7 @@ function App() {
   const [frameUrls, setFrameUrls] = useState<Record<string, string>>({});
   const [controllingDeviceId, setControllingDeviceId] = useState<string | null>(null);
   const [commandDeviceIds, setCommandDeviceIds] = useState<string[]>([]);
+  const [health, setHealth] = useState<Record<string, Health>>({});
 
   const device = devices.find((value) => value.device_id === selectedDeviceId) ?? null;
   // Политика урока по умолчанию применяется ко всему классу: выбор отдельных
@@ -132,6 +159,18 @@ function App() {
     } catch (error) { setMessage(String(error)); }
   }
 
+  async function checkHealth(deviceIds: string[]) {
+    setMessage("Опрашиваем состояние устройств…");
+    const results = await Promise.allSettled(deviceIds.map(async (deviceId) => {
+      const report = await invoke<Health>("request_health", { deviceId });
+      setHealth((current) => ({ ...current, [deviceId]: report }));
+    }));
+    const failed = results.filter((result) => result.status === "rejected").length;
+    setMessage(failed === 0
+      ? `Состояние получено: ${deviceIds.length}`
+      : `Состояние получено: ${deviceIds.length - failed}/${deviceIds.length}`);
+  }
+
   function toggleCommandDevice(deviceId: string) {
     setCommandDeviceIds((current) => current.includes(deviceId)
       ? current.filter((value) => value !== deviceId)
@@ -201,6 +240,32 @@ function App() {
       <button onClick={() => void runCommand("focus", "vscode", policyTargets)} disabled={policyTargets.length === 0}>Focus Mode</button>
       <button onClick={() => void runCommand("focus_off", "", policyTargets)} disabled={policyTargets.length === 0}>Выключить Focus</button>
       <button onClick={() => void runCommand("policy_off", "", policyTargets)} disabled={policyTargets.length === 0}>Снять политику</button>
+    </section>
+    <section className="panel" aria-label="Состояние кабинета">
+      <h2>Кабинет</h2>
+      <button onClick={() => void checkHealth(policyTargets)} disabled={policyTargets.length === 0}>Проверить состояние</button>
+      <button onClick={() => void runCommand("repair", "python-classroom", policyTargets)} disabled={policyTargets.length === 0}>Привести к профилю Python</button>
+      {devices.length > 0 && <table className="health">
+        <thead><tr><th>Устройство</th><th>Состояние</th><th>Диск</th><th>Что не так</th></tr></thead>
+        <tbody>
+          {devices.map((value) => {
+            const report = health[value.device_id];
+            return <tr key={value.device_id}>
+              <td>{value.hostname}</td>
+              <td>{report ? STATE_TEXT[report.state] ?? report.state : "—"}</td>
+              <td>{report ? `${Math.round(report.disk_percent)}%` : "—"}</td>
+              <td>{report
+                ? [
+                    ...report.warnings.map((code) => WARNING_TEXT[code] ?? code),
+                    ...report.drift.map((entry) => entry.kind === "missing"
+                      ? `нет ${entry.application_id}`
+                      : `${entry.application_id}: ${entry.actual_version} вместо ${entry.required_version}`),
+                  ].join("; ") || "—"
+                : "—"}</td>
+            </tr>;
+          })}
+        </tbody>
+      </table>}
     </section>
     {devices.length > 0 && <section className="grid" aria-label="Экраны устройств">
       {devices.map((value) => <article className={`device-card ${value.device_id === selectedDeviceId ? "selected" : ""}`} key={value.device_id} onClick={() => setSelectedDeviceId(value.device_id)}>
