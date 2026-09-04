@@ -13,6 +13,7 @@ use screen_capture::{
     DxgiDesktopCapture, FrameEncoder, JpegEncoder, ScreenCapture, scale_to_max_width,
 };
 use uuid::Uuid;
+use windows_platform::indicator::StudentIndicator;
 
 use crate::ipc_client::IpcClient;
 
@@ -125,6 +126,7 @@ pub async fn run(session_id: u32, pipe_name: &str) -> std::io::Result<()> {
 
     let mut remote_input = SendInputRemote::new();
     let mut remote_session: Option<String> = None;
+    let indicator = StudentIndicator::default();
     loop {
         let recv_result = tokio::time::timeout(PARENT_DEATH_GRACE_PERIOD * 5, client.recv()).await;
 
@@ -201,6 +203,20 @@ pub async fn run(session_id: u32, pipe_name: &str) -> std::io::Result<()> {
                 }
             }
             Some(Payload::RemoteControlStart(request)) => {
+                if let Err(error) = indicator.show() {
+                    tracing::error!(error = %error, event = "REMOTE_CONTROL_INDICATOR_FAILED");
+                    let response = Envelope {
+                        message_id: new_message_id(),
+                        payload: Some(Payload::CaptureError(CaptureError {
+                            code: "INDICATOR_UNAVAILABLE".to_owned(),
+                            message: "не удалось показать индикатор remote control".to_owned(),
+                        })),
+                    };
+                    if client.send(&response).await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
                 remote_session = Some(request.session_id.clone());
                 tracing::info!(session_id = %request.session_id, event = "REMOTE_CONTROL_INDICATOR_SHOWN");
                 let response = Envelope {
@@ -217,6 +233,7 @@ pub async fn run(session_id: u32, pipe_name: &str) -> std::io::Result<()> {
             }
             Some(Payload::RemoteControlStop(request)) => {
                 remote_session = None;
+                indicator.hide();
                 tracing::info!(reason = %request.reason, event = "REMOTE_CONTROL_INDICATOR_HIDDEN");
                 let response = Envelope {
                     message_id: new_message_id(),
@@ -256,6 +273,7 @@ pub async fn run(session_id: u32, pipe_name: &str) -> std::io::Result<()> {
             }
             Some(Payload::Shutdown(_)) => {
                 if remote_session.take().is_some() {
+                    indicator.hide();
                     tracing::info!(
                         event = "REMOTE_CONTROL_INDICATOR_HIDDEN",
                         reason = "service_shutdown"
