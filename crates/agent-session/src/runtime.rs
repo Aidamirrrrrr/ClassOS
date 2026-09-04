@@ -289,5 +289,13 @@ pub async fn run(session_id: u32, pipe_name: &str) -> std::io::Result<()> {
         }
     }
 
+    if remote_session.take().is_some() {
+        indicator.hide();
+        tracing::info!(
+            event = "REMOTE_CONTROL_INDICATOR_HIDDEN",
+            reason = "service_connection_closed"
+        );
+    }
+
     Ok(())
 }

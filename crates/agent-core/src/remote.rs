@@ -12,6 +12,7 @@ pub enum RemoteControlState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoteControlError {
     OwnedByAnotherTeacher,
+    AlreadyActive,
     NotOwner,
     NotActive,
 }
@@ -31,7 +32,7 @@ impl RemoteControlSession {
             Some((existing, _)) if existing != &owner_id => {
                 Err(RemoteControlError::OwnedByAnotherTeacher)
             }
-            Some(_) => Ok(()),
+            Some(_) => Err(RemoteControlError::AlreadyActive),
             None => {
                 self.state = Some((owner_id, session_id));
                 Ok(())
@@ -96,5 +97,25 @@ mod tests {
             .unwrap();
         assert_eq!(session.disconnect(), Some("session-a".to_owned()));
         assert_eq!(session.state(), RemoteControlState::Idle);
+    }
+
+    #[test]
+    fn owner_cannot_replace_active_session() {
+        let mut session = RemoteControlSession::default();
+        session
+            .start("teacher-a".to_owned(), "session-a".to_owned())
+            .unwrap();
+
+        assert_eq!(
+            session.start("teacher-a".to_owned(), "session-b".to_owned()),
+            Err(RemoteControlError::AlreadyActive)
+        );
+        assert_eq!(
+            session.state(),
+            RemoteControlState::Active {
+                owner_id: "teacher-a".to_owned(),
+                session_id: "session-a".to_owned(),
+            }
+        );
     }
 }

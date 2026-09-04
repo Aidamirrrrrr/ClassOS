@@ -14,7 +14,7 @@
 | T1 — Network & Device Discovery | spec-ready | done | CI only | [T1_NETWORK_AND_DEVICE_DISCOVERY_SPEC.md](T1_NETWORK_AND_DEVICE_DISCOVERY_SPEC.md) |
 | T2 — Screen Capture (DXGI) | spec-ready | in progress | not started | [T2_SCREEN_CAPTURE_DXGI_SPEC.md](T2_SCREEN_CAPTURE_DXGI_SPEC.md) |
 | T3 — Continuous Streaming | spec-ready | in progress | not started | [T3_CONTINUOUS_STREAMING_SPEC.md](T3_CONTINUOUS_STREAMING_SPEC.md) |
-| T4 — Remote Control | spec-ready | not started | not started | [T4_REMOTE_CONTROL_SPEC.md](T4_REMOTE_CONTROL_SPEC.md) |
+| T4 — Remote Control | spec-ready | in progress | not started | [T4_REMOTE_CONTROL_SPEC.md](T4_REMOTE_CONTROL_SPEC.md) |
 | — CHECKPOINT #1 demo (реальному преподавателю) | — | — | — | `product/03_EXECUTION_PLAN_90_DAYS.md` §15 |
 | T5 — Classroom Commands + Bulk Actions | spec-ready | not started | not started | [T5_CLASSROOM_COMMANDS_SPEC.md](T5_CLASSROOM_COMMANDS_SPEC.md) |
 | T6 — Policy Engine + Focus Mode | spec-ready | not started | not started | [T6_POLICY_ENGINE_FOCUS_MODE_SPEC.md](T6_POLICY_ENGINE_FOCUS_MODE_SPEC.md) |

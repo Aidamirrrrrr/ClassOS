@@ -31,12 +31,17 @@ docs/
 │       ├── 0007-t1-local-enrollment-stub.md
 │       ├── 0008-monorepo-tooling.md
 │       ├── 0009-t1-network-transport.md
-│       └── 0010-t1-device-key-storage.md
+│       ├── 0010-t1-device-key-storage.md
+│       ├── 0011-t3-parameterized-local-capture.md
+│       └── 0012-t4-remote-input-session-boundary.md
 │
 └── specs/                                 ← ЧТО именно реализовать, milestone за milestone
     ├── BACKLOG.md                         статус всех milestone'ов T0–T8+
     ├── README-T0.md                       реализация и отложенная runtime-проверка T0
     ├── README-T1.md                       текущий отчёт реализации T1
+    ├── README-T2.md                       текущий отчёт реализации T2
+    ├── README-T3.md                       текущий отчёт реализации T3
+    ├── README-T4.md                       текущий отчёт реализации T4
     ├── T0_SERVICE_SESSION_HOST_SPEC.md         [SPEC-READY]
     ├── T1_NETWORK_AND_DEVICE_DISCOVERY_SPEC.md [SPEC-READY]
     ├── T2_SCREEN_CAPTURE_DXGI_SPEC.md          [SPEC-READY]
@@ -83,6 +88,9 @@ specs/BACKLOG.md → текущий milestone spec
 
 ## 3. Статус проекта
 
-Сейчас: **автоматическая реализация T0 завершена, реализация T1 начата, спецификации T0–T8 готовы**. T0 прошёл локальные проверки, Windows cross-build и CI; полная проверка на постоянной Windows 11 машине отложена и учитывается отдельным статусом. T1 выполняется последовательно, без заявления о пройденной runtime-приёмке T0 (см. `CLAUDE.md`, раздел «Правило последовательных milestone»).
+Сейчас: **T0 и T1 реализованы и проверены автоматикой; T2–T4 находятся в
+реализации и ждут обязательной приёмки на реальных Windows-машинах;
+спецификации T0–T8 готовы**. Runtime-проверка ведётся отдельно и не заменяется
+успешной сборкой или тестами.
 
 Актуальный трекер статусов — `specs/BACKLOG.md`.

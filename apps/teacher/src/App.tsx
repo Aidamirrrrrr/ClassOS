@@ -143,8 +143,9 @@ function App() {
     const rect = event.currentTarget.getBoundingClientRect();
     const x = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
     const y = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
-    void invoke("send_remote_mouse_button", { deviceId: device.device_id, button: event.button, isDown: true, x, y });
-    void invoke("send_remote_mouse_button", { deviceId: device.device_id, button: event.button, isDown: false, x, y });
+    const button = event.button === 2 ? 1 : event.button === 1 ? 2 : 0;
+    void invoke("send_remote_mouse_button", { deviceId: device.device_id, button, isDown: true, x, y });
+    void invoke("send_remote_mouse_button", { deviceId: device.device_id, button, isDown: false, x, y });
   }
 
   function wheelPointer(event: React.WheelEvent<HTMLImageElement>) {

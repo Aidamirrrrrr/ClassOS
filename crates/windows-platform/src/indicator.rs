@@ -9,9 +9,9 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
-    HWND_TOPMOST, MSG, PostMessageW, RegisterClassW, SW_SHOWNA, SWP_NOACTIVATE, SWP_SHOWWINDOW,
-    SetWindowPos, ShowWindow, WM_CLOSE, WM_DESTROY, WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    HWND_TOPMOST, MSG, PostMessageW, PostQuitMessage, RegisterClassW, SW_SHOWNA, SWP_NOACTIVATE,
+    SWP_SHOWWINDOW, SetWindowPos, ShowWindow, WM_CLOSE, WM_DESTROY, WM_PAINT, WNDCLASSW,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::w;
 
@@ -151,7 +151,10 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
-        WM_DESTROY => LRESULT(0),
+        WM_DESTROY => {
+            unsafe { PostQuitMessage(0) };
+            LRESULT(0)
+        }
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
     }
 }

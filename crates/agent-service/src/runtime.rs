@@ -94,14 +94,21 @@ impl CaptureBroker {
         *self.current.lock().expect("capture broker mutex poisoned") = Some((pid, sender));
     }
 
-    fn clear(&self, pid: u32) {
+    /// Потеря текущего Session Host немедленно отзывает его control-сессию.
+    fn clear(&self, pid: u32) -> Option<String> {
         let mut current = self.current.lock().expect("capture broker mutex poisoned");
         if current
             .as_ref()
             .is_some_and(|(current_pid, _)| *current_pid == pid)
         {
             *current = None;
+            return self
+                .remote_owner
+                .lock()
+                .expect("remote owner mutex poisoned")
+                .disconnect();
         }
+        None
     }
 
     async fn capture(
@@ -663,7 +670,9 @@ pub async fn run(
                     }
                     Some(ConnectionEvent::Lost { pid }) => {
                         connections.remove(&pid);
-                        capture_broker.clear(pid);
+                        if let Some(session_id) = capture_broker.clear(pid) {
+                            tracing::warn!(session_id = %session_id, event = "REMOTE_CONTROL_REVOKED", reason = "session_host_disconnected");
+                        }
                         for event in supervisor.notify_ipc_lost(pid, Instant::now()) {
                             log_supervisor_event(&event);
                         }
@@ -861,6 +870,28 @@ async fn handle_control_connection(
 }
 
 async fn serve_heartbeat(
+    connection: transport::ServerControlConnection,
+    device_id: String,
+    teacher_session_id: String,
+    capture_broker: Arc<CaptureBroker>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let result = serve_heartbeat_loop(
+        connection,
+        device_id,
+        teacher_session_id.clone(),
+        Arc::clone(&capture_broker),
+    )
+    .await;
+
+    if let Some(session_id) = capture_broker.release_remote(&teacher_session_id) {
+        capture_broker.stop_remote("teacher_disconnected");
+        tracing::info!(teacher_session_id = %teacher_session_id, session_id = %session_id, action = "REMOTE_CONTROL_STOPPED", result = "SUCCESS", reason = "connection_closed", event = "AUDIT");
+    }
+
+    result
+}
+
+async fn serve_heartbeat_loop(
     mut connection: transport::ServerControlConnection,
     device_id: String,
     teacher_session_id: String,
@@ -992,12 +1023,14 @@ async fn serve_heartbeat(
                         Some(protocol::network::envelope::Payload::RemoteControlStart(request)) => {
                             let session_id = new_message_id();
                             let payload = if request.device_id != device_id {
+                                tracing::info!(teacher_session_id = %teacher_session_id, requested_device_id = %request.device_id, action = "REMOTE_CONTROL_STARTED", result = "DENIED", reason = "device_mismatch", event = "AUDIT");
                                 protocol::network::envelope::Payload::RemoteControlStopped(protocol::network::RemoteControlStopped { device_id: device_id.clone(), reason: "denied".to_owned() })
-                            } else if capture_broker.claim_remote(teacher_session_id.clone(), session_id.clone()).is_err() {
+                            } else if let Err(error) = capture_broker.claim_remote(teacher_session_id.clone(), session_id.clone()) {
+                                tracing::info!(teacher_session_id = %teacher_session_id, action = "REMOTE_CONTROL_STARTED", result = "DENIED", reason = ?error, event = "AUDIT");
                                 protocol::network::envelope::Payload::RemoteControlStopped(protocol::network::RemoteControlStopped { device_id: device_id.clone(), reason: "denied".to_owned() })
                             } else if let Err(error) = capture_broker.start_remote(session_id.clone()).await {
                                 let _ = capture_broker.release_remote(&teacher_session_id);
-                                tracing::warn!(code = error.code, event = "REMOTE_CONTROL_START_FAILED");
+                                tracing::warn!(teacher_session_id = %teacher_session_id, session_id = %session_id, code = error.code, action = "REMOTE_CONTROL_STARTED", result = "ERROR", event = "AUDIT");
                                 protocol::network::envelope::Payload::RemoteControlStopped(protocol::network::RemoteControlStopped { device_id: device_id.clone(), reason: "error".to_owned() })
                             } else {
                                 tracing::info!(teacher_session_id = %teacher_session_id, session_id = %session_id, action = "REMOTE_CONTROL_STARTED", result = "SUCCESS", event = "AUDIT");
@@ -1006,13 +1039,21 @@ async fn serve_heartbeat(
                             connection.send(&protocol::network::Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: new_message_id(), timestamp_ms: now_unix_ms(), payload: Some(payload) }).await?;
                         }
                         Some(protocol::network::envelope::Payload::RemoteControlStop(request)) => {
-                            let payload = match capture_broker.release_remote(&teacher_session_id) {
-                                Some(session_id) if request.device_id == device_id => {
+                            let payload = if request.device_id != device_id {
+                                tracing::info!(teacher_session_id = %teacher_session_id, requested_device_id = %request.device_id, action = "REMOTE_CONTROL_STOPPED", result = "DENIED", reason = "device_mismatch", event = "AUDIT");
+                                protocol::network::envelope::Payload::RemoteControlStopped(protocol::network::RemoteControlStopped { device_id: device_id.clone(), reason: "denied".to_owned() })
+                            } else {
+                                match capture_broker.release_remote(&teacher_session_id) {
+                                    Some(session_id) => {
                                     capture_broker.stop_remote("teacher_stopped");
                                     tracing::info!(teacher_session_id = %teacher_session_id, session_id = %session_id, action = "REMOTE_CONTROL_STOPPED", result = "SUCCESS", event = "AUDIT");
                                     protocol::network::envelope::Payload::RemoteControlStopped(protocol::network::RemoteControlStopped { device_id: device_id.clone(), reason: "teacher_stopped".to_owned() })
+                                    }
+                                    None => {
+                                        tracing::info!(teacher_session_id = %teacher_session_id, action = "REMOTE_CONTROL_STOPPED", result = "DENIED", reason = "not_owner", event = "AUDIT");
+                                        protocol::network::envelope::Payload::RemoteControlStopped(protocol::network::RemoteControlStopped { device_id: device_id.clone(), reason: "denied".to_owned() })
+                                    }
                                 }
-                                _ => protocol::network::envelope::Payload::RemoteControlStopped(protocol::network::RemoteControlStopped { device_id: device_id.clone(), reason: "denied".to_owned() }),
                             };
                             connection.send(&protocol::network::Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: new_message_id(), timestamp_ms: now_unix_ms(), payload: Some(payload) }).await?;
                         }

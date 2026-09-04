@@ -17,7 +17,10 @@ include!(concat!(env!("OUT_DIR"), "/classos.local.v1.rs"));
 mod local_tests {
     use prost::Message;
 
-    use super::{CaptureRequest, Envelope, Frame, envelope};
+    use super::{
+        CaptureRequest, Envelope, Frame, RemoteControlStart, RemoteControlStarted,
+        RemoteControlStop, RemoteControlStopped, envelope,
+    };
 
     #[test]
     fn capture_request_round_trip_preserves_capture_options() {
@@ -51,6 +54,33 @@ mod local_tests {
             Envelope::decode(value.encode_to_vec().as_slice()).unwrap(),
             value
         );
+    }
+
+    #[test]
+    fn remote_control_messages_round_trip() {
+        for payload in [
+            envelope::Payload::RemoteControlStart(RemoteControlStart {
+                session_id: "session-1".to_owned(),
+            }),
+            envelope::Payload::RemoteControlStarted(RemoteControlStarted {
+                session_id: "session-1".to_owned(),
+            }),
+            envelope::Payload::RemoteControlStop(RemoteControlStop {
+                reason: "teacher_stopped".to_owned(),
+            }),
+            envelope::Payload::RemoteControlStopped(RemoteControlStopped {
+                reason: "teacher_stopped".to_owned(),
+            }),
+        ] {
+            let value = Envelope {
+                message_id: "remote-control-1".to_owned(),
+                payload: Some(payload),
+            };
+            assert_eq!(
+                Envelope::decode(value.encode_to_vec().as_slice()).unwrap(),
+                value
+            );
+        }
     }
 }
 
@@ -150,6 +180,52 @@ pub mod network {
                     target_fps: 2,
                     max_width: 640,
                 })),
+            };
+            assert_eq!(
+                Envelope::decode(envelope.encode_to_vec().as_slice()).unwrap(),
+                envelope
+            );
+        }
+
+        #[test]
+        fn remote_input_round_trip_preserves_mouse_and_keyboard_variants() {
+            let events = [
+                remote_input_event::Event::MouseMove(MouseMove { x: 0.25, y: 0.75 }),
+                remote_input_event::Event::KeyEvent(KeyEvent {
+                    virtual_key_code: 0x41,
+                    is_down: true,
+                }),
+            ];
+
+            for event in events {
+                let envelope = Envelope {
+                    protocol_version: PROTOCOL_VERSION,
+                    message_id: "input-1".to_owned(),
+                    timestamp_ms: 42,
+                    payload: Some(envelope::Payload::RemoteInputEvent(RemoteInputEvent {
+                        device_id: "device-1".to_owned(),
+                        event: Some(event),
+                    })),
+                };
+                assert_eq!(
+                    Envelope::decode(envelope.encode_to_vec().as_slice()).unwrap(),
+                    envelope
+                );
+            }
+        }
+
+        #[test]
+        fn remote_control_lifecycle_round_trip_preserves_session_id() {
+            let envelope = Envelope {
+                protocol_version: PROTOCOL_VERSION,
+                message_id: "remote-start-1".to_owned(),
+                timestamp_ms: 42,
+                payload: Some(envelope::Payload::RemoteControlStarted(
+                    RemoteControlStarted {
+                        device_id: "device-1".to_owned(),
+                        session_id: "session-1".to_owned(),
+                    },
+                )),
             };
             assert_eq!(
                 Envelope::decode(envelope.encode_to_vec().as_slice()).unwrap(),
