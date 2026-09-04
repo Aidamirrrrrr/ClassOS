@@ -11,6 +11,7 @@ use protocol::network::{envelope, EnrollmentErrorCode, EnrollmentResult, Envelop
 use serde::Serialize;
 use tauri::http::{Response, StatusCode, header};
 use tauri::{Emitter, State};
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use transport::{
     DeviceCredential, DeviceTransport, TeacherAuthority, TlsClient, build_teacher_hello, discovery,
@@ -23,7 +24,10 @@ struct AppState {
     devices: Mutex<HashMap<String, EnrolledDevice>>,
     frames: Arc<Mutex<HashMap<String, StoredFrame>>>,
     streams: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    remote_controls: Arc<Mutex<HashMap<String, RemoteControlHandle>>>,
 }
+
+struct RemoteControlHandle { sender: mpsc::UnboundedSender<Envelope>, cancellation: CancellationToken }
 
 struct EnrolledDevice {
     credential: DeviceCredential,
@@ -313,6 +317,61 @@ fn stop_stream(state: State<'_, AppState>, device_id: String) {
     }
 }
 
+#[tauri::command]
+async fn start_remote_control(state: State<'_, AppState>, device_id: String) -> Result<(), String> {
+    let (credential, fingerprint, ip, port, secret) = {
+        let devices = state.devices.lock().map_err(|_| "состояние занято")?;
+        let device = devices.get(&device_id).ok_or_else(|| "устройство ещё не зарегистрировано".to_owned())?;
+        let authority = state.authority.lock().map_err(|_| "состояние занято")?;
+        (device.credential.clone(), device.fingerprint, device.ip.clone(), device.control_port, authority.secret_bytes())
+    };
+    let cancellation = CancellationToken::new();
+    let (sender, mut receiver) = mpsc::unbounded_channel::<Envelope>();
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let task_device_id = device_id.clone();
+    let task_cancellation = cancellation.clone();
+    tokio::spawn(async move {
+        let mut ready_tx = Some(ready_tx);
+        let result: Result<(), String> = async {
+            let address = SocketAddr::new(ip.parse::<IpAddr>().map_err(|_| "некорректный IP-адрес".to_owned())?, port);
+            let client = TlsClient::pinned(&task_device_id, fingerprint).map_err(|error| error.to_string())?;
+            let mut connection = client.connect(address).await.map_err(|error| error.to_string())?;
+            connection.recv().await.map_err(|error| error.to_string())?.ok_or_else(|| "устройство закрыло соединение".to_owned())?;
+            let authority = TeacherAuthority::from_secret(&secret);
+            connection.send(&build_teacher_hello(&authority, &credential, format!("teacher-{}", now_ms()), format!("hello-{}", now_ms()), now_ms())).await.map_err(|error| error.to_string())?;
+            connection.recv().await.map_err(|error| error.to_string())?.ok_or_else(|| "устройство не подтвердило авторизацию".to_owned())?;
+            connection.send(&Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: format!("remote-start-{}", now_ms()), timestamp_ms: now_ms(), payload: Some(envelope::Payload::RemoteControlStart(protocol::network::RemoteControlStart { device_id: task_device_id.clone() })) }).await.map_err(|error| error.to_string())?;
+            match connection.recv().await.map_err(|error| error.to_string())?.and_then(|message| message.payload) {
+                Some(envelope::Payload::RemoteControlStarted(_)) => { if let Some(sender) = ready_tx.take() { let _ = sender.send(Ok(())); } }
+                Some(envelope::Payload::RemoteControlStopped(value)) => { if let Some(sender) = ready_tx.take() { let _ = sender.send(Err(format!("remote control отклонён: {}", value.reason))); } return Ok(()); }
+                _ => { if let Some(sender) = ready_tx.take() { let _ = sender.send(Err("устройство вернуло неожиданный ответ на remote start".to_owned())); } return Ok(()); }
+            }
+            let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
+            loop { tokio::select! {
+                _ = task_cancellation.cancelled() => { let _ = connection.send(&Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: format!("remote-stop-{}", now_ms()), timestamp_ms: now_ms(), payload: Some(envelope::Payload::RemoteControlStop(protocol::network::RemoteControlStop { device_id: task_device_id.clone() })) }).await; return Ok(()); }
+                _ = heartbeat.tick() => connection.send(&Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: format!("heartbeat-{}", now_ms()), timestamp_ms: now_ms(), payload: Some(envelope::Payload::Heartbeat(protocol::network::Heartbeat { sequence: now_ms() as u64, sent_at_unix_ms: now_ms() })) }).await.map_err(|error| error.to_string())?,
+                message = receiver.recv() => match message { Some(message) => connection.send(&message).await.map_err(|error| error.to_string())?, None => return Ok(()) },
+                received = connection.recv() => { if received.map_err(|error| error.to_string())?.is_none() { return Ok(()); } }
+            }}
+        }.await;
+        if let Err(error) = result { if let Some(sender) = ready_tx.take() { let _ = sender.send(Err(error)); } }
+    });
+    tokio::time::timeout(Duration::from_secs(4), ready_rx).await.map_err(|_| "время ожидания remote control истекло".to_owned())?.map_err(|_| "remote control task завершилась".to_owned())??;
+    state.remote_controls.lock().map_err(|_| "состояние занято")?.insert(device_id, RemoteControlHandle { sender, cancellation });
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_remote_control(state: State<'_, AppState>, device_id: String) {
+    if let Ok(mut controls) = state.remote_controls.lock() { if let Some(handle) = controls.remove(&device_id) { handle.cancellation.cancel(); } }
+}
+
+#[tauri::command]
+fn send_remote_mouse_move(state: State<'_, AppState>, device_id: String, x: f32, y: f32) -> Result<(), String> {
+    let handle = state.remote_controls.lock().map_err(|_| "состояние занято")?.get(&device_id).map(|value| value.sender.clone()).ok_or_else(|| "remote control не активен".to_owned())?;
+    handle.send(Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: format!("input-{}", now_ms()), timestamp_ms: now_ms(), payload: Some(envelope::Payload::RemoteInputEvent(protocol::network::RemoteInputEvent { device_id, event: Some(protocol::network::remote_input_event::Event::MouseMove(protocol::network::MouseMove { x, y })) })) }).map_err(|_| "control-соединение закрыто".to_owned())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let frames = Arc::new(Mutex::new(HashMap::new()));
@@ -324,6 +383,7 @@ pub fn run() {
             devices: Mutex::new(HashMap::new()),
             frames,
             streams: Arc::new(Mutex::new(HashMap::new())),
+            remote_controls: Arc::new(Mutex::new(HashMap::new())),
         })
         .register_uri_scheme_protocol("classos-frame", move |_, request| {
             let device_id = request.uri().path().strip_prefix("/frames/").unwrap_or_default();
@@ -350,7 +410,10 @@ pub fn run() {
             enroll_device,
             request_screenshot,
             start_stream,
-            stop_stream
+            stop_stream,
+            start_remote_control,
+            stop_remote_control,
+            send_remote_mouse_move
         ])
         .run(tauri::generate_context!())
         .expect("не удалось запустить Teacher Console");

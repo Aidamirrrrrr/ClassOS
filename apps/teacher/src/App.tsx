@@ -18,6 +18,7 @@ function App() {
   const [message, setMessage] = useState("Готово к работе");
   const [enrollmentCode, setEnrollmentCode] = useState("");
   const [frameUrls, setFrameUrls] = useState<Record<string, string>>({});
+  const [controllingDeviceId, setControllingDeviceId] = useState<string | null>(null);
 
   const device = devices.find((value) => value.device_id === selectedDeviceId) ?? null;
 
@@ -99,6 +100,27 @@ function App() {
     setMessage("Поток остановлен");
   }
 
+  async function takeControl() {
+    if (!device) return;
+    try { await invoke("start_remote_control", { deviceId: device.device_id }); setControllingDeviceId(device.device_id); setMessage("Remote control активен"); }
+    catch (error) { setMessage(String(error)); }
+  }
+
+  async function stopControl() {
+    if (!device) return;
+    await invoke("stop_remote_control", { deviceId: device.device_id });
+    setControllingDeviceId(null);
+    setMessage("Remote control остановлен");
+  }
+
+  function movePointer(event: React.PointerEvent<HTMLImageElement>) {
+    if (!device || controllingDeviceId !== device.device_id) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    const y = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+    void invoke("send_remote_mouse_move", { deviceId: device.device_id, x, y });
+  }
+
   return <main className="container">
     <h1>ClassOS Teacher Console</h1>
     <p className="subtitle">Обнаружение, enrollment и live screen stream</p>
@@ -123,7 +145,9 @@ function App() {
       <button onClick={screenshot}>Сделать снимок экрана</button>
       <button onClick={() => startStream(device.device_id, true)}>Открыть live view</button>
       <button onClick={() => stopStream(device.device_id)}>Остановить поток</button>
-      {frameUrls[device.device_id] && <img className="screenshot" src={frameUrls[device.device_id]} alt="Снимок экрана устройства" />}
+      <button onClick={takeControl} disabled={controllingDeviceId === device.device_id}>Взять управление</button>
+      <button onClick={stopControl} disabled={controllingDeviceId !== device.device_id}>Остановить управление</button>
+      {frameUrls[device.device_id] && <img className="screenshot" src={frameUrls[device.device_id]} onPointerMove={movePointer} alt="Снимок экрана устройства" />}
     </section>}
     <p className="status">{message}</p>
   </main>;
