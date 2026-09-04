@@ -175,6 +175,10 @@ message Command {
     OpenUrl open_url = 14;
     RestartDevice restart_device = 15;
     ShutdownDevice shutdown_device = 16;
+    ApplyPolicy apply_policy = 17;
+    RollbackPolicy rollback_policy = 18;
+    FocusModeEnable focus_mode_enable = 19;
+    FocusModeDisable focus_mode_disable = 20;
   }
 }
 
@@ -192,6 +196,10 @@ message LaunchApplication { string application_id = 1; }
 message OpenUrl { string url = 1; }
 message RestartDevice {}
 message ShutdownDevice {}
+message ApplyPolicy { string policy_id = 1; bytes compiled_policy = 2; }
+message RollbackPolicy { string snapshot_id = 1; }
+message FocusModeEnable { repeated string allowed_application_ids = 1; }
+message FocusModeDisable {}
 
 enum EnrollmentErrorCode {
   ENROLLMENT_ERROR_CODE_UNSPECIFIED = 0;

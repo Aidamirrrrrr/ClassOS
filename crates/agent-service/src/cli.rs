@@ -21,6 +21,9 @@ pub enum Command {
         #[arg(long)]
         code: String,
     },
+    /// Локальный emergency recovery: удалить активную policy после проверки
+    /// прав администратора в Windows runtime. Не доступен по сети.
+    RecoverPolicy,
 }
 
 #[cfg(test)]
@@ -48,5 +51,11 @@ mod tests {
                 code: "ABC123".to_owned()
             }
         );
+    }
+
+    #[test]
+    fn parses_local_policy_recovery() {
+        let cli = Cli::parse_from(["classos-service", "recover-policy"]);
+        assert_eq!(cli.command, Command::RecoverPolicy);
     }
 }

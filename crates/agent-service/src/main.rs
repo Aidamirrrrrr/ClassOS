@@ -57,6 +57,12 @@ fn main() {
             }
             println!("Enrollment-код сохранён.");
         }
+        Command::RecoverPolicy => {
+            // Команда доступна только локально; сеть и Teacher Console не
+            // имеют маршрута к break-glass. Реальное снятие provider-политики
+            // подключается вместе с Windows enforcement в следующем срезе T6.
+            eprintln!("ClassOS Recovery: активная provider-политика ещё не настроена.");
+        }
     }
 }
 
