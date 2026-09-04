@@ -6,6 +6,7 @@ import "./App.css";
 type Device = { device_id: string; hostname: string; ip: string; control_port: number; room_hint: string; agent_version: string };
 type Code = { code: string; expires_at_unix_ms: number };
 type FrameReady = { device_id: string; sequence: number };
+type CommandResult = { device_id: string; command_id: string; success: boolean; error_code: string; message: string };
 
 function versionedUrl(url: string, sequence: number) {
   return `${url}?sequence=${sequence}`;
@@ -117,6 +118,16 @@ function App() {
     setMessage("Поток остановлен");
   }
 
+  async function runCommand(kind: string, value = "", deviceIds = device ? [device.device_id] : []) {
+    if (deviceIds.length === 0) return;
+    try {
+      const results = await invoke<CommandResult[]>("dispatch_classroom_command", { deviceIds, kind, value });
+      const successful = results.filter((result) => result.success).length;
+      const failed = results.filter((result) => !result.success);
+      setMessage(failed.length === 0 ? `Команда выполнена: ${successful}/${results.length}` : `Команда: ${successful}/${results.length}; ${failed.map((result) => `${result.device_id}: ${result.error_code}`).join(", ")}`);
+    } catch (error) { setMessage(String(error)); }
+  }
+
   async function takeControl() {
     if (!device) return;
     try { await invoke("start_remote_control", { deviceId: device.device_id }); setControllingDeviceId(device.device_id); setMessage("Remote control активен"); }
@@ -161,6 +172,8 @@ function App() {
       <button onClick={discover}>Найти устройство</button>
       <button onClick={createCode}>Создать enrollment-код</button>
       <button onClick={startGrid} disabled={devices.length === 0}>Запустить grid</button>
+      <button onClick={() => void runCommand("lock", "", devices.map((value) => value.device_id))} disabled={devices.length === 0}>Заблокировать всех</button>
+      <button onClick={() => void runCommand("unlock", "", devices.map((value) => value.device_id))} disabled={devices.length === 0}>Разблокировать всех</button>
       {code && <p className="code">Код: <strong>{code.code}</strong></p>}
     </section>
     {devices.length > 0 && <section className="grid" aria-label="Экраны устройств">
@@ -178,6 +191,13 @@ function App() {
       <button onClick={screenshot}>Сделать снимок экрана</button>
       <button onClick={() => startStream(device.device_id, true)}>Открыть live view</button>
       <button onClick={() => stopStream(device.device_id)}>Остановить поток</button>
+      <button onClick={() => void runCommand("lock")}>Заблокировать</button>
+      <button onClick={() => void runCommand("unlock")}>Разблокировать</button>
+      <button onClick={() => { const text = window.prompt("Текст сообщения"); if (text) void runCommand("message", text); }}>Сообщение</button>
+      <button onClick={() => void runCommand("application", "vscode")}>Открыть VS Code</button>
+      <button onClick={() => { const url = window.prompt("HTTP(S) URL"); if (url) void runCommand("url", url); }}>Открыть URL</button>
+      <button onClick={() => void runCommand("restart")}>Перезагрузить</button>
+      <button onClick={() => void runCommand("shutdown")}>Выключить</button>
       <button onClick={takeControl} disabled={controllingDeviceId === device.device_id}>Взять управление</button>
       <button onClick={stopControl} disabled={controllingDeviceId !== device.device_id}>Остановить управление</button>
       {frameUrls[device.device_id] && <img className="screenshot" src={frameUrls[device.device_id]} onPointerMove={movePointer} onPointerDown={clickPointer} onWheel={wheelPointer} alt="Снимок экрана устройства" />}

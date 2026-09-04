@@ -12,11 +12,13 @@ use serde::Serialize;
 use tauri::http::{Response, StatusCode, header};
 use tauri::{Emitter, State};
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use transport::{
     DeviceCredential, DeviceTransport, TeacherAuthority, TlsClient, build_teacher_hello, discovery,
 };
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 struct AppState {
     authority: Mutex<TeacherAuthority>,
@@ -29,6 +31,7 @@ struct AppState {
 
 struct RemoteControlHandle { sender: mpsc::UnboundedSender<Envelope>, cancellation: CancellationToken }
 
+#[derive(Clone)]
 struct EnrolledDevice {
     credential: DeviceCredential,
     fingerprint: [u8; 32],
@@ -54,6 +57,15 @@ struct DeviceView {
 struct EnrollmentCodeView {
     code: String,
     expires_at_unix_ms: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct CommandResultView {
+    device_id: String,
+    command_id: String,
+    success: bool,
+    error_code: String,
+    message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -317,6 +329,75 @@ fn stop_stream(state: State<'_, AppState>, device_id: String) {
     }
 }
 
+fn command_body(kind: &str, value: &str) -> Result<protocol::network::command::Body, String> {
+    use protocol::network::command::Body;
+    match kind {
+        "lock" => Ok(Body::LockDevice(protocol::network::LockDevice {})),
+        "unlock" => Ok(Body::UnlockDevice(protocol::network::UnlockDevice {})),
+        "message" if !value.is_empty() => Ok(Body::ShowMessage(protocol::network::ShowMessage { text: value.to_owned() })),
+        "application" => Ok(Body::LaunchApplication(protocol::network::LaunchApplication { application_id: value.to_owned() })),
+        "url" => Ok(Body::OpenUrl(protocol::network::OpenUrl { url: value.to_owned() })),
+        "restart" => Ok(Body::RestartDevice(protocol::network::RestartDevice {})),
+        "shutdown" => Ok(Body::ShutdownDevice(protocol::network::ShutdownDevice {})),
+        _ => Err("неизвестная или неполная classroom-команда".to_owned()),
+    }
+}
+
+async fn dispatch_command_to_device(
+    device_id: String,
+    device: EnrolledDevice,
+    authority_secret: [u8; 32],
+    kind: String,
+    value: String,
+) -> CommandResultView {
+    let command_id = Uuid::new_v4().to_string();
+    let result: Result<protocol::network::CommandResult, String> = async {
+        let body = command_body(&kind, &value)?;
+        let client = TlsClient::pinned(&device_id, device.fingerprint).map_err(|error| error.to_string())?;
+        let address = SocketAddr::new(device.ip.parse::<IpAddr>().map_err(|_| "некорректный IP-адрес".to_owned())?, device.control_port);
+        let mut connection = client.connect(address).await.map_err(|error| error.to_string())?;
+        connection.recv().await.map_err(|error| error.to_string())?.ok_or_else(|| "устройство закрыло соединение".to_owned())?;
+        let authority = TeacherAuthority::from_secret(&authority_secret);
+        connection.send(&build_teacher_hello(&authority, &device.credential, format!("teacher-{}", now_ms()), format!("hello-{}", now_ms()), now_ms())).await.map_err(|error| error.to_string())?;
+        connection.recv().await.map_err(|error| error.to_string())?.ok_or_else(|| "устройство не подтвердило авторизацию".to_owned())?;
+        connection.send(&Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: format!("command-{}", command_id), timestamp_ms: now_ms(), payload: Some(envelope::Payload::Command(protocol::network::Command { command_id: command_id.clone(), expires_at_unix_ms: now_ms().saturating_add(30_000), body: Some(body) })) }).await.map_err(|error| error.to_string())?;
+        match connection.recv().await.map_err(|error| error.to_string())?.and_then(|message| message.payload) {
+            Some(envelope::Payload::CommandResult(result)) => Ok(result),
+            _ => Err("устройство вернуло неожиданный ответ на classroom-команду".to_owned()),
+        }
+    }.await;
+    match result {
+        Ok(result) => CommandResultView { device_id, command_id: result.command_id, success: result.success, error_code: result.error_code, message: result.message },
+        Err(message) => CommandResultView { device_id, command_id, success: false, error_code: "COMMAND_DELIVERY_FAILED".to_owned(), message },
+    }
+}
+
+#[tauri::command]
+async fn dispatch_classroom_command(
+    state: State<'_, AppState>,
+    device_ids: Vec<String>,
+    kind: String,
+    value: String,
+) -> Result<Vec<CommandResultView>, String> {
+    if device_ids.is_empty() { return Err("не выбраны устройства".to_owned()); }
+    command_body(&kind, &value)?;
+    let (devices, authority_secret) = {
+        let stored = state.devices.lock().map_err(|_| "состояние занято")?;
+        let devices = device_ids.into_iter().filter_map(|id| stored.get(&id).cloned().map(|device| (id, device))).collect::<Vec<_>>();
+        let authority = state.authority.lock().map_err(|_| "состояние занято")?;
+        (devices, authority.secret_bytes())
+    };
+    let mut tasks = JoinSet::new();
+    for (device_id, device) in devices {
+        tasks.spawn(dispatch_command_to_device(device_id, device, authority_secret, kind.clone(), value.clone()));
+    }
+    let mut results = Vec::new();
+    while let Some(result) = tasks.join_next().await {
+        results.push(result.map_err(|error| error.to_string())?);
+    }
+    Ok(results)
+}
+
 #[tauri::command]
 async fn start_remote_control(state: State<'_, AppState>, device_id: String) -> Result<(), String> {
     let (credential, fingerprint, ip, port, secret) = {
@@ -422,6 +503,7 @@ pub fn run() {
             request_screenshot,
             start_stream,
             stop_stream,
+            dispatch_classroom_command,
             start_remote_control,
             stop_remote_control,
             send_remote_mouse_move,
