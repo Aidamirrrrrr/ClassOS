@@ -45,7 +45,7 @@ enum ConnectionEvent {
 enum ConnectionCommand {
     Shutdown,
     Capture {
-        display_id: u32,
+        request: protocol::CaptureRequest,
         response: oneshot::Sender<Result<protocol::Frame, protocol::CaptureError>>,
     },
 }
@@ -70,7 +70,10 @@ impl CaptureBroker {
         }
     }
 
-    async fn capture(&self, display_id: u32) -> Result<protocol::Frame, protocol::CaptureError> {
+    async fn capture(
+        &self,
+        request: protocol::CaptureRequest,
+    ) -> Result<protocol::Frame, protocol::CaptureError> {
         let sender = self
             .current
             .lock()
@@ -83,10 +86,7 @@ impl CaptureBroker {
             })?;
         let (response, receiver) = oneshot::channel();
         sender
-            .send(ConnectionCommand::Capture {
-                display_id,
-                response,
-            })
+            .send(ConnectionCommand::Capture { request, response })
             .map_err(|_| protocol::CaptureError {
                 code: "SESSION_HOST_DISCONNECTED".to_owned(),
                 message: "Session Host недоступен".to_owned(),
@@ -320,14 +320,14 @@ async fn connection_task(
                         tracing::info!(session_id, pid, event = "IPC_SHUTDOWN_SENT");
                         break;
                     }
-                    Some(ConnectionCommand::Capture { display_id, response }) => {
+                    Some(ConnectionCommand::Capture { request, response }) => {
                         if pending_capture.is_some() {
                             let _ = response.send(Err(protocol::CaptureError { code: "CAPTURE_BUSY".to_owned(), message: "предыдущий снимок ещё обрабатывается".to_owned() }));
                             continue;
                         }
                         let request = Envelope {
                             message_id: new_message_id(),
-                            payload: Some(Payload::CaptureRequest(protocol::CaptureRequest { display_id })),
+                            payload: Some(Payload::CaptureRequest(request)),
                         };
                         if connection.send(&request).await.is_err() {
                             let _ = response.send(Err(protocol::CaptureError { code: "SESSION_HOST_DISCONNECTED".to_owned(), message: "не удалось отправить запрос Session Host".to_owned() }));
@@ -702,14 +702,18 @@ async fn serve_heartbeat(
     capture_broker: Arc<CaptureBroker>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut tick = tokio::time::interval(agent_core::network::NETWORK_HEARTBEAT_INTERVAL);
+    let mut stream_tick = tokio::time::interval(Duration::from_millis(50));
+    stream_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut last_seen = std::time::Instant::now();
     let mut subscription: Option<agent_core::stream::ActiveSubscription> = None;
+    let mut frame_clock: Option<agent_core::stream::FrameClock> = None;
     loop {
         tokio::select! {
             _ = tick.tick() => {
                 if last_seen.elapsed() > agent_core::network::NETWORK_OFFLINE_TIMEOUT { return Ok(()); }
                 if subscription.is_some_and(|value| value.is_expired(now_unix_ms())) {
                     subscription = None;
+                    frame_clock = None;
                     tracing::info!(event = "STREAM_SUBSCRIPTION_EXPIRED");
                 }
                 connection.send(&protocol::network::Envelope {
@@ -721,6 +725,49 @@ async fn serve_heartbeat(
                     })),
                 }).await?;
             }
+            _ = stream_tick.tick() => {
+                let Some(clock) = &mut frame_clock else { continue; };
+                let now = now_unix_ms();
+                let Some(sequence) = clock.take_due(now) else { continue; };
+                let schedule = clock.schedule();
+                let mode = match schedule.mode {
+                    agent_core::stream::StreamVisibility::Visible => protocol::network::StreamMode::Thumbnail,
+                    agent_core::stream::StreamVisibility::Selected => protocol::network::StreamMode::Selected,
+                    agent_core::stream::StreamVisibility::Hidden => continue,
+                };
+                let quality = match mode {
+                    protocol::network::StreamMode::Thumbnail => 60,
+                    protocol::network::StreamMode::Selected => 80,
+                    protocol::network::StreamMode::Unspecified => continue,
+                };
+                let payload = match capture_broker.capture(protocol::CaptureRequest {
+                    display_id: 0,
+                    max_width: schedule.max_width,
+                    jpeg_quality: quality,
+                }).await {
+                    Ok(frame) => protocol::network::envelope::Payload::ScreenFrame(protocol::network::ScreenFrame {
+                        device_id: device_id.clone(),
+                        display_id: frame.display_id,
+                        width: frame.width,
+                        height: frame.height,
+                        encoded_data: frame.encoded_data,
+                        format: frame.format,
+                        captured_at_unix_ms: now_unix_ms(),
+                        mode: mode as i32,
+                        sequence,
+                    }),
+                    Err(error) => protocol::network::envelope::Payload::CaptureError(protocol::network::CaptureError {
+                        code: error.code,
+                        message: error.message,
+                    }),
+                };
+                connection.send(&protocol::network::Envelope {
+                    protocol_version: protocol::network::PROTOCOL_VERSION,
+                    message_id: new_message_id(),
+                    timestamp_ms: now_unix_ms(),
+                    payload: Some(payload),
+                }).await?;
+            }
             received = connection.recv() => {
                 match received? {
                     Some(message) => match message.payload {
@@ -729,6 +776,10 @@ async fn serve_heartbeat(
                             if let Some(value) = &mut subscription { value.refresh(now_unix_ms()); }
                         }
                         Some(protocol::network::envelope::Payload::StreamSubscribe(request)) => {
+                            if request.device_id != device_id {
+                                tracing::warn!(requested_device_id = request.device_id, event = "STREAM_SUBSCRIPTION_REJECTED");
+                                continue;
+                            }
                             let visibility = match protocol::network::StreamMode::try_from(request.mode) {
                                 Ok(protocol::network::StreamMode::Thumbnail) => agent_core::stream::StreamVisibility::Visible,
                                 Ok(protocol::network::StreamMode::Selected) => agent_core::stream::StreamVisibility::Selected,
@@ -736,10 +787,12 @@ async fn serve_heartbeat(
                             };
                             let schedule = agent_core::stream::negotiate_schedule(visibility, request.target_fps, request.max_width);
                             subscription = Some(agent_core::stream::ActiveSubscription::new(schedule, now_unix_ms()));
+                            frame_clock = Some(agent_core::stream::FrameClock::new(schedule, now_unix_ms()));
                             tracing::info!(fps = schedule.fps, max_width = schedule.max_width, event = "STREAM_SUBSCRIBED");
                         }
                         Some(protocol::network::envelope::Payload::StreamUnsubscribe(_)) => {
                             subscription = None;
+                            frame_clock = None;
                             tracing::info!(event = "STREAM_UNSUBSCRIBED");
                         }
                         Some(protocol::network::envelope::Payload::ScreenshotRequest(request)) => {
@@ -748,7 +801,11 @@ async fn serve_heartbeat(
                                     code: "DEVICE_MISMATCH".to_owned(), message: "запрос предназначен другому устройству".to_owned(),
                                 })
                             } else {
-                                match capture_broker.capture(request.display_id).await {
+                                match capture_broker.capture(protocol::CaptureRequest {
+                                    display_id: request.display_id,
+                                    max_width: 0,
+                                    jpeg_quality: 80,
+                                }).await {
                                     Ok(frame) => protocol::network::envelope::Payload::ScreenFrame(protocol::network::ScreenFrame {
                                         device_id: device_id.clone(), display_id: frame.display_id, width: frame.width, height: frame.height,
                                         encoded_data: frame.encoded_data, format: frame.format, captured_at_unix_ms: now_unix_ms(),

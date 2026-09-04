@@ -20,11 +20,13 @@ mod local_tests {
     use super::{CaptureRequest, Envelope, Frame, envelope};
 
     #[test]
-    fn capture_request_round_trip_preserves_display_id() {
+    fn capture_request_round_trip_preserves_capture_options() {
         let value = Envelope {
             message_id: "capture-1".to_owned(),
             payload: Some(envelope::Payload::CaptureRequest(CaptureRequest {
                 display_id: 1,
+                max_width: 640,
+                jpeg_quality: 60,
             })),
         };
         assert_eq!(

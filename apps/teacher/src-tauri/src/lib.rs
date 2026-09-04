@@ -1,22 +1,28 @@
 //! Минимальный backend Teacher Console для сетевого milestone T1.
 
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use agent_core::network::{DEFAULT_ENROLLMENT_TTL, EnrollmentAuthority, EnrollmentContext};
 use protocol::network::{envelope, EnrollmentErrorCode, EnrollmentResult, Envelope};
 use serde::Serialize;
-use tauri::State;
-use transport::{discovery, build_teacher_hello, DeviceCredential, DeviceTransport, TeacherAuthority, TlsClient};
+use tauri::http::{Response, StatusCode, header};
+use tauri::{Emitter, State};
+use tokio_util::sync::CancellationToken;
+use transport::{
+    DeviceCredential, DeviceTransport, TeacherAuthority, TlsClient, build_teacher_hello, discovery,
+};
 use sha2::{Digest, Sha256};
 
 struct AppState {
     authority: Mutex<TeacherAuthority>,
     enrollment: Mutex<EnrollmentAuthority>,
     devices: Mutex<HashMap<String, EnrolledDevice>>,
+    frames: Arc<Mutex<HashMap<String, StoredFrame>>>,
+    streams: Arc<Mutex<HashMap<String, CancellationToken>>>,
 }
 
 struct EnrolledDevice {
@@ -24,6 +30,10 @@ struct EnrolledDevice {
     fingerprint: [u8; 32],
     ip: String,
     control_port: u16,
+}
+
+struct StoredFrame {
+    jpeg: Vec<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,8 +52,35 @@ struct EnrollmentCodeView {
     expires_at_unix_ms: i64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct FrameReady {
+    device_id: String,
+    sequence: u32,
+}
+
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64
+}
+
+fn frame_url(device_id: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!("http://classos-frame.localhost/frames/{device_id}")
+    }
+    #[cfg(not(windows))]
+    {
+        format!("classos-frame://localhost/frames/{device_id}")
+    }
+}
+
+fn store_frame(
+    frames: &Arc<Mutex<HashMap<String, StoredFrame>>>,
+    device_id: String,
+    jpeg: Vec<u8>,
+) {
+    if let Ok(mut frames) = frames.lock() {
+        frames.insert(device_id, StoredFrame { jpeg });
+    }
 }
 
 fn authority_path() -> PathBuf {
@@ -111,7 +148,11 @@ async fn enroll_device(state: State<'_, AppState>, device_id: String, ip: String
 }
 
 #[tauri::command]
-async fn request_screenshot(state: State<'_, AppState>, device_id: String, display_id: u32) -> Result<Vec<u8>, String> {
+async fn request_screenshot(
+    state: State<'_, AppState>,
+    device_id: String,
+    display_id: u32,
+) -> Result<String, String> {
     let (credential, fingerprint, ip, port) = {
         let devices = state.devices.lock().map_err(|_| "состояние занято")?;
         let device = devices.get(&device_id).ok_or_else(|| "устройство ещё не зарегистрировано в этой сессии".to_owned())?;
@@ -126,20 +167,191 @@ async fn request_screenshot(state: State<'_, AppState>, device_id: String, displ
     };
     connection.send(&teacher_hello).await.map_err(|error| error.to_string())?;
     let _status = connection.recv().await.map_err(|error| error.to_string())?.ok_or_else(|| "устройство не подтвердило авторизацию".to_owned())?;
-    connection.send(&protocol::network::Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: format!("screenshot-{}", now_ms()), timestamp_ms: now_ms(), payload: Some(protocol::network::envelope::Payload::ScreenshotRequest(protocol::network::ScreenshotRequest { device_id, display_id })) }).await.map_err(|error| error.to_string())?;
+    connection.send(&protocol::network::Envelope { protocol_version: protocol::network::PROTOCOL_VERSION, message_id: format!("screenshot-{}", now_ms()), timestamp_ms: now_ms(), payload: Some(protocol::network::envelope::Payload::ScreenshotRequest(protocol::network::ScreenshotRequest { device_id: device_id.clone(), display_id })) }).await.map_err(|error| error.to_string())?;
     match connection.recv().await.map_err(|error| error.to_string())?.and_then(|message| message.payload) {
-        Some(protocol::network::envelope::Payload::ScreenFrame(frame)) => Ok(frame.encoded_data),
+        Some(protocol::network::envelope::Payload::ScreenFrame(frame)) => {
+            store_frame(&state.frames, device_id.clone(), frame.encoded_data);
+            Ok(frame_url(&device_id))
+        }
         Some(protocol::network::envelope::Payload::CaptureError(error)) => Err(format!("{}: {}", error.code, error.message)),
         _ => Err("устройство вернуло неожиданный ответ на ScreenshotRequest".to_owned()),
     }
 }
 
+#[tauri::command]
+async fn start_stream(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    device_id: String,
+    selected: bool,
+) -> Result<String, String> {
+    let (credential, fingerprint, ip, control_port, authority_secret) = {
+        let devices = state.devices.lock().map_err(|_| "состояние занято")?;
+        let device = devices
+            .get(&device_id)
+            .ok_or_else(|| "устройство ещё не зарегистрировано в этой сессии".to_owned())?;
+        let authority = state.authority.lock().map_err(|_| "состояние занято")?;
+        (
+            device.credential.clone(),
+            device.fingerprint,
+            device.ip.clone(),
+            device.control_port,
+            authority.secret_bytes(),
+        )
+    };
+    let cancellation = CancellationToken::new();
+    if let Ok(mut streams) = state.streams.lock() {
+        if let Some(previous) = streams.insert(device_id.clone(), cancellation.clone()) {
+            previous.cancel();
+        }
+    }
+    let frames = Arc::clone(&state.frames);
+    let task_device_id = device_id.clone();
+    tokio::spawn(async move {
+        let result: Result<(), String> = async {
+            let address = SocketAddr::new(
+                ip.parse::<IpAddr>()
+                    .map_err(|_| "некорректный IP-адрес".to_owned())?,
+                control_port,
+            );
+            let client = TlsClient::pinned(&task_device_id, fingerprint)
+                .map_err(|error| error.to_string())?;
+            let mut connection = client.connect(address).await.map_err(|error| error.to_string())?;
+            connection
+                .recv()
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "устройство закрыло соединение".to_owned())?;
+            let authority = TeacherAuthority::from_secret(&authority_secret);
+            let teacher_hello = build_teacher_hello(
+                &authority,
+                &credential,
+                format!("teacher-{}", now_ms()),
+                format!("hello-{}", now_ms()),
+                now_ms(),
+            );
+            connection
+                .send(&teacher_hello)
+                .await
+                .map_err(|error| error.to_string())?;
+            connection
+                .recv()
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "устройство не подтвердило авторизацию".to_owned())?;
+            let mode = if selected {
+                protocol::network::StreamMode::Selected
+            } else {
+                protocol::network::StreamMode::Thumbnail
+            };
+            connection
+                .send(&protocol::network::Envelope {
+                    protocol_version: protocol::network::PROTOCOL_VERSION,
+                    message_id: format!("stream-subscribe-{}", now_ms()),
+                    timestamp_ms: now_ms(),
+                    payload: Some(protocol::network::envelope::Payload::StreamSubscribe(
+                        protocol::network::StreamSubscribe {
+                            device_id: task_device_id.clone(),
+                            mode: mode as i32,
+                            target_fps: if selected { 12 } else { 1 },
+                            max_width: if selected { 1_920 } else { 640 },
+                        },
+                    )),
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                tokio::select! {
+                    _ = cancellation.cancelled() => {
+                        let _ = connection.send(&protocol::network::Envelope {
+                            protocol_version: protocol::network::PROTOCOL_VERSION,
+                            message_id: format!("stream-unsubscribe-{}", now_ms()),
+                            timestamp_ms: now_ms(),
+                            payload: Some(protocol::network::envelope::Payload::StreamUnsubscribe(
+                                protocol::network::StreamUnsubscribe { device_id: task_device_id.clone() },
+                            )),
+                        }).await;
+                        return Ok(());
+                    }
+                    _ = heartbeat.tick() => {
+                        connection.send(&protocol::network::Envelope {
+                            protocol_version: protocol::network::PROTOCOL_VERSION,
+                            message_id: format!("heartbeat-{}", now_ms()),
+                            timestamp_ms: now_ms(),
+                            payload: Some(protocol::network::envelope::Payload::Heartbeat(protocol::network::Heartbeat {
+                                sequence: now_ms() as u64,
+                                sent_at_unix_ms: now_ms(),
+                            })),
+                        }).await.map_err(|error| error.to_string())?;
+                    }
+                    received = connection.recv() => {
+                        let message = received.map_err(|error| error.to_string())?.ok_or_else(|| "устройство закрыло stream".to_owned())?;
+                        if let Some(protocol::network::envelope::Payload::ScreenFrame(frame)) = message.payload {
+                            let sequence = frame.sequence;
+                            store_frame(&frames, task_device_id.clone(), frame.encoded_data);
+                            let _ = app.emit("stream-frame-ready", FrameReady { device_id: task_device_id.clone(), sequence });
+                        }
+                    }
+                }
+            }
+        }
+        .await;
+        if let Err(error) = result {
+            let _ = app.emit("stream-status", error);
+        }
+    });
+    Ok(frame_url(&device_id))
+}
+
+#[tauri::command]
+fn stop_stream(state: State<'_, AppState>, device_id: String) {
+    if let Ok(mut streams) = state.streams.lock() {
+        if let Some(cancellation) = streams.remove(&device_id) {
+            cancellation.cancel();
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let frames = Arc::new(Mutex::new(HashMap::new()));
+    let stream_frames = Arc::clone(&frames);
     tauri::Builder::default()
-        .manage(AppState { authority: Mutex::new(load_authority()), enrollment: Mutex::new(EnrollmentAuthority::default()), devices: Mutex::new(HashMap::new()) })
+        .manage(AppState {
+            authority: Mutex::new(load_authority()),
+            enrollment: Mutex::new(EnrollmentAuthority::default()),
+            devices: Mutex::new(HashMap::new()),
+            frames,
+            streams: Arc::new(Mutex::new(HashMap::new())),
+        })
+        .register_uri_scheme_protocol("classos-frame", move |_, request| {
+            let device_id = request.uri().path().strip_prefix("/frames/").unwrap_or_default();
+            let jpeg = stream_frames
+                .lock()
+                .ok()
+                .and_then(|frames| frames.get(device_id).map(|frame| frame.jpeg.clone()));
+            match jpeg {
+                Some(jpeg) => Response::builder()
+                    .header(header::CONTENT_TYPE, "image/jpeg")
+                    .header(header::CACHE_CONTROL, "no-store")
+                    .body(jpeg)
+                    .unwrap(),
+                None => Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Vec::new())
+                    .unwrap(),
+            }
+        })
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![create_enrollment_code, discover_device, enroll_device, request_screenshot])
+        .invoke_handler(tauri::generate_handler![
+            create_enrollment_code,
+            discover_device,
+            enroll_device,
+            request_screenshot,
+            start_stream,
+            stop_stream
+        ])
         .run(tauri::generate_context!())
         .expect("не удалось запустить Teacher Console");
 }

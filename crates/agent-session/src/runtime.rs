@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use protocol::envelope::Payload;
 use protocol::{CaptureError, Envelope, LOCAL_PROTOCOL_VERSION, Pong, SessionHello, SessionInfo};
-use screen_capture::{DxgiDesktopCapture, FrameEncoder, JpegEncoder, ScreenCapture};
+use screen_capture::{
+    DxgiDesktopCapture, FrameEncoder, JpegEncoder, ScreenCapture, scale_to_max_width,
+};
 use uuid::Uuid;
 
 use crate::ipc_client::IpcClient;
@@ -18,12 +20,19 @@ fn new_message_id() -> String {
     Uuid::new_v4().to_string()
 }
 
-fn capture_frame(display_id: u32) -> Result<protocol::Frame, screen_capture::CaptureError> {
+fn capture_frame(
+    display_id: u32,
+    max_width: u32,
+    jpeg_quality: u32,
+) -> Result<protocol::Frame, screen_capture::CaptureError> {
     let mut capture = DxgiDesktopCapture::new()?;
     capture.start(display_id)?;
-    let raw = capture.next_frame()?;
+    let raw = scale_to_max_width(capture.next_frame()?, max_width.clamp(0, 3_840))?;
     capture.stop();
-    let mut encoder = JpegEncoder::new(80);
+    let quality = (jpeg_quality != 0)
+        .then(|| u8::try_from(jpeg_quality).unwrap_or(100))
+        .unwrap_or(80);
+    let mut encoder = JpegEncoder::new(quality);
     let encoded = encoder.encode(raw)?;
     Ok(protocol::Frame {
         display_id: encoded.display_id,
@@ -129,7 +138,11 @@ pub async fn run(session_id: u32, pipe_name: &str) -> std::io::Result<()> {
                 }
             }
             Some(Payload::CaptureRequest(request)) => {
-                let response = match capture_frame(request.display_id) {
+                let response = match capture_frame(
+                    request.display_id,
+                    request.max_width,
+                    request.jpeg_quality,
+                ) {
                     Ok(frame) => Envelope {
                         message_id: new_message_id(),
                         payload: Some(Payload::Frame(frame)),

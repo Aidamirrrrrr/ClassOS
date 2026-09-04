@@ -8,6 +8,7 @@ pub mod domain;
 pub mod error;
 pub mod mocks;
 pub mod network;
+pub mod remote;
 pub mod stream;
 pub mod supervisor;
 pub mod traits;

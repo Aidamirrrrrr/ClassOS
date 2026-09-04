@@ -38,5 +38,7 @@ ADR фиксирует **необратимое или дорогое в раз�
 | [0008](0008-monorepo-tooling.md) | Монорепозиторий: pnpm workspaces + Cargo workspace, без Turborepo на старте | Accepted |
 | [0009](0009-t1-network-transport.md) | Сетевой транспорт и discovery для T1 | Accepted |
 | [0010](0010-t1-device-key-storage.md) | Хранение закрытого ключа устройства в T1 | Accepted |
+| [0011](0011-t3-parameterized-local-capture.md) | Параметризованный захват кадра в локальном IPC T3 | Accepted |
+| [0012](0012-t4-remote-input-session-boundary.md) | Remote input выполняется только в Session Host | Accepted |
 
-Следующий свободный номер: **0011**.
+Следующий свободный номер: **0013**.

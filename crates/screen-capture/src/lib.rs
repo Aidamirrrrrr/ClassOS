@@ -53,6 +53,50 @@ pub trait FrameEncoder {
     fn encode(&mut self, frame: RawFrame) -> Result<EncodedFrame, CaptureError>;
 }
 
+/// Масштабирует RGB-кадр до заданной ширины без обращения к диску.
+///
+/// T3 использует ближайшего соседа: для thumbnail это предсказуемо, не требует
+/// дополнительной зависимости и выполняется до JPEG-кодирования в Session Host.
+pub fn scale_to_max_width(frame: RawFrame, max_width: u32) -> Result<RawFrame, CaptureError> {
+    if max_width == 0 || frame.width <= max_width {
+        return Ok(frame);
+    }
+    let target_height = (u64::from(frame.height) * u64::from(max_width) / u64::from(frame.width))
+        .max(1)
+        .try_into()
+        .map_err(|_| CaptureError::InvalidBuffer)?;
+    let source_len = (frame.width as usize)
+        .checked_mul(frame.height as usize)
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or(CaptureError::InvalidBuffer)?;
+    if frame.pixels.len() != source_len {
+        return Err(CaptureError::InvalidBuffer);
+    }
+    let target_len = (max_width as usize)
+        .checked_mul(target_height as usize)
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or(CaptureError::InvalidBuffer)?;
+    let mut pixels = vec![0; target_len];
+    for target_y in 0..target_height {
+        let source_y =
+            (u64::from(target_y) * u64::from(frame.height) / u64::from(target_height)) as u32;
+        for target_x in 0..max_width {
+            let source_x =
+                (u64::from(target_x) * u64::from(frame.width) / u64::from(max_width)) as u32;
+            let source_offset = ((source_y * frame.width + source_x) * 3) as usize;
+            let target_offset = ((target_y * max_width + target_x) * 3) as usize;
+            pixels[target_offset..target_offset + 3]
+                .copy_from_slice(&frame.pixels[source_offset..source_offset + 3]);
+        }
+    }
+    Ok(RawFrame {
+        display_id: frame.display_id,
+        width: max_width,
+        height: target_height,
+        pixels,
+    })
+}
+
 /// Предсказуемый источник кадров для unit-тестов pipeline и протокола.
 pub struct MockCapture {
     displays: Vec<Display>,
@@ -276,5 +320,18 @@ mod tests {
             .decode()
             .unwrap();
         assert_eq!(decoded.len(), 8 * 4 * 3);
+    }
+
+    #[test]
+    fn scaling_preserves_aspect_ratio_and_rgb_shape() {
+        let frame = RawFrame {
+            display_id: 3,
+            width: 8,
+            height: 4,
+            pixels: (0..96).map(|value| value as u8).collect(),
+        };
+        let scaled = scale_to_max_width(frame, 4).unwrap();
+        assert_eq!((scaled.display_id, scaled.width, scaled.height), (3, 4, 2));
+        assert_eq!(scaled.pixels.len(), 4 * 2 * 3);
     }
 }

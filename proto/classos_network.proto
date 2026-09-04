@@ -32,6 +32,11 @@ message Envelope {
     CaptureError capture_error = 19;
     StreamSubscribe stream_subscribe = 20;
     StreamUnsubscribe stream_unsubscribe = 21;
+    RemoteControlStart remote_control_start = 22;
+    RemoteControlStarted remote_control_started = 23;
+    RemoteControlStop remote_control_stop = 24;
+    RemoteControlStopped remote_control_stopped = 25;
+    RemoteInputEvent remote_input_event = 26;
   }
 }
 
@@ -130,6 +135,32 @@ message StreamSubscribe {
 message StreamUnsubscribe {
   string device_id = 1;
 }
+
+message RemoteControlStart { string device_id = 1; }
+message RemoteControlStarted { string device_id = 1; string session_id = 2; }
+message RemoteControlStop { string device_id = 1; }
+message RemoteControlStopped { string device_id = 1; string reason = 2; }
+
+message RemoteInputEvent {
+  string device_id = 1;
+  oneof event {
+    MouseMove mouse_move = 10;
+    MouseButton mouse_button = 11;
+    MouseWheel mouse_wheel = 12;
+    KeyEvent key_event = 13;
+  }
+}
+
+message MouseMove { float x = 1; float y = 2; }
+message MouseButton {
+  enum Button { LEFT = 0; RIGHT = 1; MIDDLE = 2; }
+  Button button = 1;
+  bool is_down = 2;
+  float x = 3;
+  float y = 4;
+}
+message MouseWheel { int32 delta = 1; }
+message KeyEvent { uint32 virtual_key_code = 1; bool is_down = 2; }
 
 enum EnrollmentErrorCode {
   ENROLLMENT_ERROR_CODE_UNSPECIFIED = 0;

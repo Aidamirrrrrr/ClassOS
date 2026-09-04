@@ -21,6 +21,9 @@ message Envelope {
     CaptureRequest capture_request = 17;
     Frame frame = 18;
     CaptureError capture_error = 19;
+    RemoteControlStart remote_control_start = 20;
+    RemoteControlStop remote_control_stop = 21;
+    RemoteInputEvent remote_input_event = 22;
   }
 }
 
@@ -69,6 +72,10 @@ message Shutdown {}
 // Запрос единичного кадра от Service к Session Host.
 message CaptureRequest {
   uint32 display_id = 1;
+  // Нулевое значение сохраняет поведение T2: кадр исходной ширины.
+  uint32 max_width = 2;
+  // Нулевое значение использует качество JPEG по умолчанию Session Host.
+  uint32 jpeg_quality = 3;
 }
 
 // Закодированный кадр, возвращаемый Session Host после захвата.
@@ -85,3 +92,26 @@ message CaptureError {
   string code = 1;
   string message = 2;
 }
+
+message RemoteControlStart { string session_id = 1; }
+message RemoteControlStop { string reason = 1; }
+
+message RemoteInputEvent {
+  oneof event {
+    MouseMove mouse_move = 10;
+    MouseButton mouse_button = 11;
+    MouseWheel mouse_wheel = 12;
+    KeyEvent key_event = 13;
+  }
+}
+
+message MouseMove { float x = 1; float y = 2; }
+message MouseButton {
+  enum Button { LEFT = 0; RIGHT = 1; MIDDLE = 2; }
+  Button button = 1;
+  bool is_down = 2;
+  float x = 3;
+  float y = 4;
+}
+message MouseWheel { int32 delta = 1; }
+message KeyEvent { uint32 virtual_key_code = 1; bool is_down = 2; }

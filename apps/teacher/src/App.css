@@ -10,3 +10,8 @@ label { display: block; margin: 16px 0; color: #5f6b7a; }
 input { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; padding: 10px; border: 1px solid #ccd4df; border-radius: 8px; font-size: 16px; }
 .code { font-size: 20px; } .status { margin-top: 22px; color: #334155; }
 .screenshot { display: block; width: 100%; margin-top: 18px; border-radius: 8px; background: #111827; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 18px; }
+.device-card { display: grid; gap: 7px; min-height: 160px; margin: 0; padding: 14px; color: #172033; text-align: left; background: white; box-shadow: 0 4px 18px #17203312; }
+.device-card.selected { outline: 3px solid #93c5fd; }
+.device-card small { color: #5f6b7a; }
+.thumbnail { width: 100%; min-height: 96px; object-fit: contain; background: #111827; border-radius: 6px; }
