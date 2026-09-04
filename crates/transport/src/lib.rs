@@ -31,8 +31,8 @@ pub use control::{
 pub use authorization::{AuthorizationError, DeviceCredential, TeacherAuthority};
 pub use discovery::{
     DEFAULT_CONTROL_PORT, DEFAULT_DISCOVERY_PORT, DISCOVERY_MULTICAST_ADDR, DiscoveryConfig,
-    DiscoveryError, ReceivedAnnouncement, announce_loop, broadcast_once, listen_once, local_ipv4,
-    new_announcement,
+    DiscoveryError, ReceivedAnnouncement, announce_loop, broadcast_once, listen_loop, listen_once,
+    local_ipv4, new_announcement,
 };
 pub use handshake::{
     HandshakeError, LeaseRequirement, TeacherAuthorization, VerifiedTeacher, build_device_hello,

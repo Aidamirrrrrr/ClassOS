@@ -175,6 +175,7 @@ describe("enrollment через Cloud", () => {
 
     const body = JSON.stringify({
       code,
+      device_id: randomUUID(),
       hostname: "PC-01",
       certificate_der_base64: Buffer.from("certificate").toString("base64"),
     });
@@ -213,6 +214,7 @@ describe("enrollment через Cloud", () => {
         method: "POST",
         body: JSON.stringify({
           code,
+          device_id: randomUUID(),
           hostname: "PC-07",
           certificate_der_base64: Buffer.from("cert").toString("base64"),
         }),
@@ -332,5 +334,69 @@ describe("обновления", () => {
     );
     const { update } = (await response.json()) as { update: { version: string } | null };
     expect(update?.version).toBe("0.2.0");
+  });
+});
+
+describe("идентификатор устройства", () => {
+  test("Cloud использует device_id агента, а не выдаёт второй", async () => {
+    await addUser("admin-id@school.ru", "admin", BRANCH);
+    const token = await login("admin-id@school.ru");
+    const issued = await app.fetch(
+      authed("/v1/enrollment/codes", token, {
+        method: "POST",
+        body: JSON.stringify({ branch_id: BRANCH, room_id: "room-1" }),
+      }),
+    );
+    const { code } = (await issued.json()) as { code: string };
+
+    const deviceId = randomUUID();
+    const response = await enroll(
+      new Request("http://cloud/enroll", {
+        method: "POST",
+        body: JSON.stringify({
+          code,
+          device_id: deviceId,
+          hostname: "PC-42",
+          certificate_der_base64: Buffer.from("cert").toString("base64"),
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(201);
+    const body = (await response.json()) as {
+      device_id: string;
+      room_id: string | null;
+      lease_issuer_public_key: string;
+    };
+    // Второй идентификатор сделал бы список устройств Cloud несоединимым со
+    // списком консоли, который построен на discovery.
+    expect(body.device_id).toBe(deviceId);
+    expect(body.room_id).toBe("room-1");
+    expect(body.lease_issuer_public_key).toHaveLength(64);
+  });
+
+  test("не-UUID отклоняется, а не создаёт устройство", async () => {
+    await addUser("admin-bad-id@school.ru", "admin", BRANCH);
+    const token = await login("admin-bad-id@school.ru");
+    const issued = await app.fetch(
+      authed("/v1/enrollment/codes", token, {
+        method: "POST",
+        body: JSON.stringify({ branch_id: BRANCH }),
+      }),
+    );
+    const { code } = (await issued.json()) as { code: string };
+
+    const response = await enroll(
+      new Request("http://cloud/enroll", {
+        method: "POST",
+        body: JSON.stringify({
+          code,
+          device_id: "../../etc/passwd",
+          hostname: "PC-43",
+          certificate_der_base64: Buffer.from("cert").toString("base64"),
+        }),
+      }),
+    );
+    expect(response.status).toBe(400);
   });
 });

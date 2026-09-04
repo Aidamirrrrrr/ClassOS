@@ -5,6 +5,7 @@ import "./App.css";
 
 type Device = { device_id: string; hostname: string; ip: string; control_port: number; room_hint: string; agent_version: string };
 type Code = { code: string; expires_at_unix_ms: number };
+type Membership = { organizationId: string; branchId: string | null; role: string };
 type FrameReady = { device_id: string; sequence: number };
 type CommandResult = { device_id: string; command_id: string; success: boolean; error_code: string; message: string };
 type Drift = { application_id: string; kind: string; required_version: string; actual_version: string };
@@ -48,6 +49,12 @@ function App() {
   const [controllingDeviceId, setControllingDeviceId] = useState<string | null>(null);
   const [commandDeviceIds, setCommandDeviceIds] = useState<string[]>([]);
   const [health, setHealth] = useState<Record<string, Health>>({});
+  const [discovering, setDiscovering] = useState(false);
+  const [cloudUrl, setCloudUrl] = useState("http://localhost:8787");
+  const [cloudEmail, setCloudEmail] = useState("");
+  const [cloudPassword, setCloudPassword] = useState("");
+  const [memberships, setMemberships] = useState<Membership[]>([]);
+  const [leaseExpiresAt, setLeaseExpiresAt] = useState<number | null>(null);
 
   const device = devices.find((value) => value.device_id === selectedDeviceId) ?? null;
   // Политика урока по умолчанию применяется ко всему классу: выбор отдельных
@@ -73,6 +80,32 @@ function App() {
     return () => { unlisten?.(); };
   }, []);
 
+  // Устройства объявляют себя независимо, поэтому класс собирается
+  // постепенно. Повторное объявление обновляет адрес: устройство могло
+  // получить новый IP после перезагрузки.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<Device>("device-discovered", (event) => {
+      setDevices((current) => {
+        const index = current.findIndex((value) => value.device_id === event.payload.device_id);
+        if (index === -1) return [...current, event.payload];
+        const updated = [...current];
+        updated[index] = event.payload;
+        return updated;
+      });
+    }).then((dispose) => { unlisten = dispose; });
+    return () => { unlisten?.(); };
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<string>("discovery-status", (event) => {
+      setDiscovering(false);
+      setMessage(event.payload);
+    }).then((dispose) => { unlisten = dispose; });
+    return () => { unlisten?.(); };
+  }, []);
+
   useEffect(() => {
     if (!controllingDeviceId) return;
     const sendKey = (event: KeyboardEvent, isDown: boolean) => {
@@ -90,13 +123,61 @@ function App() {
     };
   }, [controllingDeviceId]);
 
-  async function discover() {
-    setMessage("Ищем устройства в локальной сети…");
+  async function toggleDiscovery() {
     try {
-      const found = await invoke<Device>("discover_device");
-      setDevices((current) => current.some((value) => value.device_id === found.device_id) ? current : [...current, found]);
-      setSelectedDeviceId(found.device_id);
-      setMessage("Устройство найдено");
+      if (discovering) {
+        await invoke("stop_discovery");
+        setDiscovering(false);
+        setMessage(`Поиск остановлен; устройств в списке: ${devices.length}`);
+        return;
+      }
+      await invoke("start_discovery");
+      setDiscovering(true);
+      setMessage("Ищем устройства в локальной сети… список пополняется сам");
+    } catch (error) { setMessage(String(error)); }
+  }
+
+  async function signIn() {
+    setMessage("Входим в Cloud…");
+    try {
+      const found = await invoke<Membership[]>("cloud_sign_in", { baseUrl: cloudUrl, email: cloudEmail, password: cloudPassword });
+      setMemberships(found);
+      setCloudPassword("");
+      setMessage(found.length > 0 ? `Вход выполнен; филиалов доступно: ${found.length}` : "Вход выполнен, но доступных филиалов нет");
+    } catch (error) { setMessage(String(error)); }
+  }
+
+  async function signOut() {
+    await invoke("cloud_sign_out");
+    setMemberships([]);
+    setLeaseExpiresAt(null);
+    setMessage("Выход из Cloud выполнен");
+  }
+
+  // Lease нужен, чтобы вести урок на устройствах, зарегистрированных через
+  // Cloud: без него они откажут в подключении.
+  async function issueLease(membership: Membership) {
+    if (!membership.branchId) {
+      setMessage("Для этой роли нужен конкретный филиал");
+      return;
+    }
+    try {
+      const expiresAt = await invoke<number>("cloud_issue_lease", { organizationId: membership.organizationId, branchId: membership.branchId });
+      setLeaseExpiresAt(expiresAt);
+      setMessage(`Доступ к кабинету получен до ${new Date(expiresAt).toLocaleString()}`);
+    } catch (error) { setMessage(String(error)); }
+  }
+
+  async function createCloudCode(membership: Membership) {
+    if (!membership.branchId) {
+      setMessage("Для этой роли нужен конкретный филиал");
+      return;
+    }
+    try {
+      const value = await invoke<Code>("cloud_create_enrollment_code", { branchId: membership.branchId, roomId: null });
+      setCode(value);
+      setEnrollmentCode(value.code);
+      setMessage("Код создан в Cloud; введите его на Student PC");
     } catch (error) { setMessage(String(error)); }
   }
 
@@ -171,6 +252,13 @@ function App() {
       : `Состояние получено: ${deviceIds.length - failed}/${deviceIds.length}`);
   }
 
+  // Перезагрузка и выключение необратимы для того, кто в этот момент работает
+  // за компьютером: один промах мышью не должен их запускать.
+  function confirmAnd(question: string, kind: string) {
+    if (!device) return;
+    if (window.confirm(`${question}\n\n${device.hostname}`)) void runCommand(kind);
+  }
+
   function toggleCommandDevice(deviceId: string) {
     setCommandDeviceIds((current) => current.includes(deviceId)
       ? current.filter((value) => value !== deviceId)
@@ -221,9 +309,29 @@ function App() {
   return <main className="container">
     <h1>ClassOS Teacher Console</h1>
     <p className="subtitle">Обнаружение, enrollment и live screen stream</p>
+    <section className="panel" aria-label="Cloud">
+      <h2>Cloud</h2>
+      {memberships.length === 0 ? <>
+        <label>Адрес<input value={cloudUrl} onChange={(event) => setCloudUrl(event.currentTarget.value)} /></label>
+        <label>Почта<input type="email" autoComplete="username" value={cloudEmail} onChange={(event) => setCloudEmail(event.currentTarget.value)} /></label>
+        <label>Пароль<input type="password" autoComplete="current-password" value={cloudPassword} onChange={(event) => setCloudPassword(event.currentTarget.value)} /></label>
+        <button onClick={signIn} disabled={!cloudEmail || !cloudPassword}>Войти</button>
+        <p className="subtitle">Без Cloud консоль работает с устройствами, зарегистрированными локально.</p>
+      </> : <>
+        <p className="subtitle">{leaseExpiresAt
+          ? `Доступ к кабинету действует до ${new Date(leaseExpiresAt).toLocaleTimeString()}`
+          : "Доступ к кабинету не получен — устройства из Cloud откажут в подключении"}</p>
+        {memberships.map((membership) => <div key={`${membership.organizationId}-${membership.branchId ?? "org"}`} className="membership">
+          <span>{membership.role}{membership.branchId ? ` · филиал ${membership.branchId.slice(0, 8)}` : " · вся организация"}</span>
+          <button onClick={() => void issueLease(membership)}>Получить доступ</button>
+          <button onClick={() => void createCloudCode(membership)}>Код регистрации</button>
+        </div>)}
+        <button onClick={signOut}>Выйти</button>
+      </>}
+    </section>
     <section className="panel">
-      <button onClick={discover}>Найти устройство</button>
-      <button onClick={createCode}>Создать enrollment-код</button>
+      <button onClick={toggleDiscovery}>{discovering ? "Остановить поиск" : "Найти устройства"}</button>
+      <button onClick={createCode}>Создать локальный код</button>
       <button onClick={startGrid} disabled={devices.length === 0}>Запустить grid</button>
       <button onClick={selectAllCommandDevices} disabled={devices.length === 0}>{commandDeviceIds.length === devices.length ? "Снять выбор" : "Выбрать всех"}</button>
       <button onClick={() => void runCommand("lock", "", commandDeviceIds)} disabled={commandDeviceIds.length === 0}>Заблокировать выбранных</button>
@@ -288,8 +396,8 @@ function App() {
       <button onClick={() => { const text = window.prompt("Текст сообщения"); if (text) void runCommand("message", text); }}>Сообщение</button>
       <button onClick={() => void runCommand("application", "vscode")}>Открыть VS Code</button>
       <button onClick={() => { const url = window.prompt("HTTP(S) URL"); if (url) void runCommand("url", url); }}>Открыть URL</button>
-      <button onClick={() => void runCommand("restart")}>Перезагрузить</button>
-      <button onClick={() => void runCommand("shutdown")}>Выключить</button>
+      <button onClick={() => confirmAnd("Перезагрузить этот компьютер?", "restart")}>Перезагрузить</button>
+      <button onClick={() => confirmAnd("Выключить этот компьютер?", "shutdown")}>Выключить</button>
       <button onClick={takeControl} disabled={controllingDeviceId === device.device_id}>Взять управление</button>
       <button onClick={stopControl} disabled={controllingDeviceId !== device.device_id}>Остановить управление</button>
       {frameUrls[device.device_id] && <img className="screenshot" src={frameUrls[device.device_id]} onPointerMove={movePointer} onPointerDown={clickPointer} onWheel={wheelPointer} alt="Снимок экрана устройства" />}

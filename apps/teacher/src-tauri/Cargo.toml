@@ -32,3 +32,6 @@ sha2 = "0.11.0"
 tokio-util = { version = "0.7.19", features = ["rt"] }
 uuid = { version = "1.26.0", features = ["v4"] }
 policy-engine = { version = "0.1.0", path = "../../../crates/policy-engine" }
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls-no-provider", "json", "charset", "http2"] }
+base64 = "0.23.1"
+thiserror = "2.0.20"

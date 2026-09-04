@@ -8,6 +8,9 @@
 
 import { randomUUID } from "node:crypto";
 
+/** Формат идентификатора устройства, приходящего от агента (UUID v4 из T1). */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 import { bearerToken, createSession, hashToken, sessionIsValid, verifyPassword } from "../domain/auth";
 import { auditEvent } from "../domain/audit";
 import { checkCode, hashCode, issueToken } from "../domain/enrollment";
@@ -296,10 +299,18 @@ export function enrollmentHandler(deps: AppDeps) {
   return async function enroll(request: Request): Promise<Response> {
     const body = (await request.json()) as {
       code?: string;
+      device_id?: string;
       hostname?: string;
       certificate_der_base64?: string;
     };
-    if (!body.code || !body.hostname || !body.certificate_der_base64) {
+    if (!body.code || !body.device_id || !body.hostname || !body.certificate_der_base64) {
+      return error("ENROLLMENT_ERROR_CODE_INVALID", 400);
+    }
+    // Устройство уже имеет постоянный идентификатор из T1: он используется в
+    // discovery, в TLS-имени и во всех сообщениях протокола. Выдать здесь
+    // второй UUID означало бы, что списки устройств Cloud и консоли нельзя
+    // сопоставить между собой.
+    if (!UUID_PATTERN.test(body.device_id)) {
       return error("ENROLLMENT_ERROR_CODE_INVALID", 400);
     }
     const token = await store.findEnrollmentToken(hashCode(body.code));
@@ -318,7 +329,7 @@ export function enrollmentHandler(deps: AppDeps) {
     }
 
     const certificate = Buffer.from(body.certificate_der_base64, "base64");
-    const deviceId = randomUUID();
+    const deviceId = body.device_id;
     await store.upsertDevice({
       id: deviceId,
       organizationId: check.token.organizationId,

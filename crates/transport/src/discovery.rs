@@ -126,6 +126,37 @@ pub async fn listen_once(config: DiscoveryConfig) -> Result<ReceivedAnnouncement
     receive_one(&socket).await
 }
 
+/// Слушает объявления до отмены, отдавая каждое корректное в `on_announcement`.
+///
+/// Один вызов `listen_once` на нажатие кнопки годится для проверки связи, но
+/// не для класса: устройства объявляют себя независимо, и консоль обязана
+/// видеть их все, а не по одному (spec T1 §5).
+///
+/// Некорректное объявление пропускается, а не прерывает прослушивание: одно
+/// испорченное сообщение в сети не должно останавливать обнаружение класса.
+pub async fn listen_loop<F>(
+    config: DiscoveryConfig,
+    cancellation: CancellationToken,
+    mut on_announcement: F,
+) -> Result<(), DiscoveryError>
+where
+    F: FnMut(ReceivedAnnouncement),
+{
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, config.port)).await?;
+    socket.join_multicast_v4(config.multicast_addr, Ipv4Addr::UNSPECIFIED)?;
+    loop {
+        tokio::select! {
+            _ = cancellation.cancelled() => return Ok(()),
+            received = receive_one(&socket) => match received {
+                Ok(announcement) => on_announcement(announcement),
+                // Ошибка сокета фатальна, ошибка разбора — нет.
+                Err(DiscoveryError::Io(error)) => return Err(DiscoveryError::Io(error)),
+                Err(_) => continue,
+            }
+        }
+    }
+}
+
 async fn receive_one(socket: &UdpSocket) -> Result<ReceivedAnnouncement, DiscoveryError> {
     let mut buffer = [0_u8; MAX_ANNOUNCEMENT_SIZE];
     let (size, source) = socket.recv_from(&mut buffer).await?;

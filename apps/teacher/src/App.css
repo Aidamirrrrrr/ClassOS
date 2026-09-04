@@ -20,3 +20,7 @@ input { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; pa
 
 .health { width: 100%; border-collapse: collapse; margin-top: 0.75rem; font-size: 0.9rem; }
 .health th, .health td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #8883; }
+
+.membership { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid #e2e8f0; }
+.membership span { flex: 1 1 200px; color: #334155; }
+.membership:last-of-type { border-bottom: 0; }

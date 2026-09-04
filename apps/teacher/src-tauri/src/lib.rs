@@ -1,4 +1,7 @@
-//! Минимальный backend Teacher Console для сетевого milestone T1.
+//! Backend Teacher Console: discovery, enrollment, экраны, команды и
+//! интеграция с Cloud v0.
+
+mod cloud;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -29,6 +32,11 @@ struct AppState {
     /// (ADR-0007) lease не требуют, а cloud-enrolled устройство без него
     /// откажет в подключении — и это правильное поведение, а не ошибка UI.
     lease: Mutex<Option<SignedLease>>,
+    /// Отмена фоновой задачи обнаружения, если она запущена.
+    discovery: Mutex<Option<CancellationToken>>,
+    /// Активная сессия Cloud. Пока её нет, консоль работает в режиме
+    /// локального enrollment (ADR-0007).
+    cloud: Mutex<Option<cloud::CloudSession>>,
     enrollment: Mutex<EnrollmentAuthority>,
     devices: Mutex<HashMap<String, EnrolledDevice>>,
     frames: Arc<Mutex<HashMap<String, StoredFrame>>>,
@@ -53,7 +61,7 @@ struct StoredFrame {
     jpeg: Vec<u8>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct DeviceView {
     device_id: String,
     hostname: String,
@@ -172,6 +180,32 @@ fn create_enrollment_code(state: State<'_, AppState>) -> Result<EnrollmentCodeVi
     })
 }
 
+/// Разбирает hex-строку Cloud в байты.
+fn hex_to_bytes(value: &str) -> Option<Vec<u8>> {
+    if !value.len().is_multiple_of(2) || value.is_empty() {
+        return None;
+    }
+    (0..value.len() / 2)
+        .map(|index| u8::from_str_radix(value.get(index * 2..index * 2 + 2)?, 16).ok())
+        .collect()
+}
+
+fn device_view(received: discovery::ReceivedAnnouncement) -> DeviceView {
+    // Адрес берётся из источника пакета, а не из объявления: объявление
+    // недоверенное и не должно определять, куда пойдёт соединение.
+    let ip = received.source.ip().to_string();
+    let announcement = received.announcement;
+    DeviceView {
+        device_id: announcement.device_id,
+        hostname: announcement.hostname,
+        ip,
+        control_port: announcement.control_port,
+        room_hint: announcement.room_hint,
+        agent_version: announcement.agent_version,
+    }
+}
+
+/// Однократный поиск: остаётся для быстрой проверки связи с одним устройством.
 #[tauri::command]
 async fn discover_device() -> Result<DeviceView, String> {
     let received = tokio::time::timeout(
@@ -181,16 +215,48 @@ async fn discover_device() -> Result<DeviceView, String> {
     .await
     .map_err(|_| "время ожидания discovery истекло".to_owned())?
     .map_err(|error| error.to_string())?;
-    let source_ip = received.source.ip().to_string();
-    let announcement = received.announcement;
-    Ok(DeviceView {
-        device_id: announcement.device_id,
-        hostname: announcement.hostname,
-        ip: source_ip,
-        control_port: announcement.control_port,
-        room_hint: announcement.room_hint,
-        agent_version: announcement.agent_version,
-    })
+    Ok(device_view(received))
+}
+
+/// Включает непрерывное обнаружение класса.
+///
+/// Устройства объявляют себя независимо и с разбросом по времени, поэтому
+/// класс собирается постепенно: каждое новое объявление уходит во фронтенд
+/// событием `device-discovered`. Повторный вызов перезапускает прослушивание,
+/// а не заводит второе.
+#[tauri::command]
+fn start_discovery(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    let cancellation = CancellationToken::new();
+    {
+        let mut running = state.discovery.lock().map_err(|_| "состояние занято")?;
+        if let Some(previous) = running.replace(cancellation.clone()) {
+            previous.cancel();
+        }
+    }
+
+    tokio::spawn(async move {
+        let result = discovery::listen_loop(Default::default(), cancellation, |received| {
+            let _ = app.emit("device-discovered", device_view(received));
+        })
+        .await;
+        if let Err(error) = result {
+            let _ = app.emit(
+                "discovery-status",
+                format!("Обнаружение остановлено: {error}"),
+            );
+        }
+    });
+    Ok(())
+}
+
+/// Останавливает непрерывное обнаружение.
+#[tauri::command]
+fn stop_discovery(state: State<'_, AppState>) -> Result<(), String> {
+    let mut running = state.discovery.lock().map_err(|_| "состояние занято")?;
+    if let Some(cancellation) = running.take() {
+        cancellation.cancel();
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -238,12 +304,46 @@ async fn enroll_device(
     if request.device_id != device_id || device_hello.device_id != device_id {
         return Err("идентификатор устройства не совпадает с discovery".to_owned());
     }
-    {
-        let mut enrollment = state.enrollment.lock().map_err(|_| "состояние занято")?;
-        enrollment
-            .consume(&code, &EnrollmentContext::default(), now_ms())
-            .map_err(|error| error.to_string())?;
-    }
+    // Кто именно проверяет одноразовый код, зависит от режима: Cloud, если
+    // консоль в него вошла, иначе локальная заглушка ADR-0007. Двух
+    // авторитетов одновременно быть не должно.
+    let cloud_session = state.cloud.lock().map_err(|_| "состояние занято")?.clone();
+    let cloud_enrollment = match &cloud_session {
+        Some(session) => Some(
+            cloud::enroll_device(
+                session,
+                &code,
+                &device_id,
+                &device_hello.hostname,
+                &request.device_certificate_der,
+            )
+            .await
+            .map_err(|error| error.to_string())?,
+        ),
+        None => {
+            let mut enrollment = state.enrollment.lock().map_err(|_| "состояние занято")?;
+            enrollment
+                .consume(&code, &EnrollmentContext::default(), now_ms())
+                .map_err(|error| error.to_string())?;
+            None
+        }
+    };
+
+    // Устройство переходит в режим обязательной проверки прав только если
+    // Cloud вернул и ключ издателя, и кабинет: ключ без кабинета проверить
+    // нечем (ADR-0016).
+    let (lease_issuer_public_key, room_id) = match &cloud_enrollment {
+        Some(enrollment) => {
+            let key = hex_to_bytes(&enrollment.lease_issuer_public_key)
+                .ok_or("Cloud вернул некорректный ключ издателя lease")?;
+            let room = enrollment
+                .room_id
+                .clone()
+                .ok_or("устройство зарегистрировано в Cloud без кабинета")?;
+            (key, room)
+        }
+        None => (Vec::new(), String::new()),
+    };
     let expires = now_ms().saturating_add(Duration::from_secs(30 * 24 * 3600).as_millis() as i64);
     let (issued_credential, issuer_public_key) = {
         let authority = state.authority.lock().map_err(|_| "состояние занято")?;
@@ -278,8 +378,8 @@ async fn enroll_device(
             // Локальный enrollment (ADR-0007) не является Cloud и не выдаёт
             // classroom lease: устройство остаётся в прежнем режиме
             // авторизации, и притворяться иначе нельзя.
-            lease_issuer_public_key: Vec::new(),
-            room_id: String::new(),
+            lease_issuer_public_key,
+            room_id,
         })),
     };
     connection
@@ -1045,6 +1145,75 @@ fn send_remote_key(
 ///
 /// Отсутствие lease — не ошибка на стороне консоли: решение о том, обязателен
 /// ли он, принимает устройство (ADR-0016).
+/// Вход в Cloud.
+///
+/// До входа консоль остаётся полностью работоспособной для устройств из
+/// локального enrollment: Cloud добавляет разграничение прав, а не
+/// возможность вести урок (инвариант 5).
+#[tauri::command]
+async fn cloud_sign_in(
+    state: State<'_, AppState>,
+    base_url: String,
+    email: String,
+    password: String,
+) -> Result<Vec<cloud::MembershipView>, String> {
+    let (session, memberships) = cloud::sign_in(&base_url, &email, &password)
+        .await
+        .map_err(|error| error.to_string())?;
+    *state.cloud.lock().map_err(|_| "состояние занято")? = Some(session);
+    Ok(memberships)
+}
+
+/// Выход из Cloud: сессия и lease забываются вместе.
+#[tauri::command]
+fn cloud_sign_out(state: State<'_, AppState>) -> Result<(), String> {
+    *state.cloud.lock().map_err(|_| "состояние занято")? = None;
+    *state.lease.lock().map_err(|_| "состояние занято")? = None;
+    Ok(())
+}
+
+/// Получает classroom lease на филиал и запоминает его на время урока.
+#[tauri::command]
+async fn cloud_issue_lease(
+    state: State<'_, AppState>,
+    organization_id: String,
+    branch_id: String,
+) -> Result<i64, String> {
+    let session = current_cloud_session(&state)?;
+    let (lease, _issuer) = cloud::issue_lease(&session, &organization_id, &branch_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let expires_at = lease.lease.expires_at_unix_ms;
+    *state.lease.lock().map_err(|_| "состояние занято")? = Some(lease);
+    Ok(expires_at)
+}
+
+/// Выпускает enrollment-код в Cloud, а не локально.
+#[tauri::command]
+async fn cloud_create_enrollment_code(
+    state: State<'_, AppState>,
+    branch_id: String,
+    room_id: Option<String>,
+) -> Result<EnrollmentCodeView, String> {
+    let session = current_cloud_session(&state)?;
+    let code = cloud::create_enrollment_code(&session, &branch_id, room_id.as_deref())
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(EnrollmentCodeView {
+        code: code.code,
+        expires_at_unix_ms: code.expires_at_unix_ms,
+    })
+}
+
+fn current_cloud_session(state: &AppState) -> Result<cloud::CloudSession, String> {
+    state
+        .cloud
+        .lock()
+        .map_err(|_| "состояние занято")?
+        .clone()
+        .ok_or_else(|| "нет активной сессии Cloud".to_owned())
+}
+
 fn current_lease(state: &AppState) -> Option<SignedLease> {
     state.lease.lock().ok().and_then(|value| value.clone())
 }
@@ -1062,6 +1231,8 @@ pub fn run() {
         .manage(AppState {
             authority: Mutex::new(load_authority()),
             lease: Mutex::new(None),
+            discovery: Mutex::new(None),
+            cloud: Mutex::new(None),
             enrollment: Mutex::new(EnrollmentAuthority::default()),
             devices: Mutex::new(HashMap::new()),
             frames,
@@ -1094,6 +1265,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             create_enrollment_code,
             discover_device,
+            start_discovery,
+            stop_discovery,
+            cloud_sign_in,
+            cloud_sign_out,
+            cloud_issue_lease,
+            cloud_create_enrollment_code,
             enroll_device,
             request_screenshot,
             request_health,

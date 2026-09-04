@@ -23,6 +23,10 @@ jobs:
         run: pnpm --dir apps/teacher install --ignore-scripts --frozen-lockfile
       - name: TypeScript typecheck
         run: pnpm --dir apps/teacher exec tsc --noEmit
+      # Production-сборка ловит то, чего не видит tsc: ошибки бандлера,
+      # недостающие ассеты и импорты, существующие только в типах.
+      - name: Production build
+        run: pnpm --dir apps/teacher build
 
   cloud:
     name: ubuntu-latest (Cloud v0)
@@ -110,6 +114,9 @@ jobs:
 
       - name: cargo clippy (Teacher Console backend)
         run: cargo clippy --manifest-path apps/teacher/src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: cargo test (Teacher Console backend)
+        run: cargo test --manifest-path apps/teacher/src-tauri/Cargo.toml
 
   service-smoke:
     name: windows-latest (service install/start smoke test)
