@@ -9,6 +9,7 @@ use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput,
     IDXGIOutput1, IDXGIOutputDuplication,
 };
+use windows::core::Interface;
 
 use crate::{CaptureError, Display, RawFrame, ScreenCapture};
 
