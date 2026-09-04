@@ -41,6 +41,23 @@ function App() {
     return () => { unlisten?.(); };
   }, []);
 
+  useEffect(() => {
+    if (!controllingDeviceId) return;
+    const sendKey = (event: KeyboardEvent, isDown: boolean) => {
+      if (isDown && event.repeat) return;
+      event.preventDefault();
+      void invoke("send_remote_key", { deviceId: controllingDeviceId, virtualKeyCode: event.keyCode, isDown });
+    };
+    const keyDown = (event: KeyboardEvent) => sendKey(event, true);
+    const keyUp = (event: KeyboardEvent) => sendKey(event, false);
+    window.addEventListener("keydown", keyDown, { capture: true });
+    window.addEventListener("keyup", keyUp, { capture: true });
+    return () => {
+      window.removeEventListener("keydown", keyDown, { capture: true });
+      window.removeEventListener("keyup", keyUp, { capture: true });
+    };
+  }, [controllingDeviceId]);
+
   async function discover() {
     setMessage("Ищем устройства в локальной сети…");
     try {
