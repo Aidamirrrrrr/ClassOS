@@ -3,6 +3,8 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
+pub const STREAM_SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(15);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamVisibility {
     Hidden,
@@ -15,6 +17,30 @@ pub struct StreamSchedule {
     pub fps: u32,
     pub max_width: u32,
     pub mode: StreamVisibility,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActiveSubscription {
+    pub schedule: StreamSchedule,
+    pub last_seen_unix_ms: i64,
+}
+
+impl ActiveSubscription {
+    pub fn new(schedule: StreamSchedule, now_unix_ms: i64) -> Self {
+        Self {
+            schedule,
+            last_seen_unix_ms: now_unix_ms,
+        }
+    }
+
+    pub fn refresh(&mut self, now_unix_ms: i64) {
+        self.last_seen_unix_ms = now_unix_ms;
+    }
+
+    pub fn is_expired(self, now_unix_ms: i64) -> bool {
+        let timeout = i64::try_from(STREAM_SUBSCRIPTION_TIMEOUT.as_millis()).unwrap_or(i64::MAX);
+        now_unix_ms.saturating_sub(self.last_seen_unix_ms) > timeout
+    }
 }
 
 impl StreamSchedule {
@@ -141,5 +167,15 @@ mod tests {
         queue.push(OutboundPriority::ThumbnailScreen, 2);
         assert_eq!(queue.pop(), Some(2));
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn subscription_expires_without_teacher_traffic() {
+        let schedule = negotiate_schedule(StreamVisibility::Visible, 1, 640);
+        let mut subscription = ActiveSubscription::new(schedule, 1_000);
+        assert!(!subscription.is_expired(15_000));
+        subscription.refresh(10_000);
+        assert!(!subscription.is_expired(20_000));
+        assert!(subscription.is_expired(26_000));
     }
 }

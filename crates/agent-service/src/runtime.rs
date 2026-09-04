@@ -616,10 +616,15 @@ async fn serve_heartbeat(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut tick = tokio::time::interval(agent_core::network::NETWORK_HEARTBEAT_INTERVAL);
     let mut last_seen = std::time::Instant::now();
+    let mut subscription: Option<agent_core::stream::ActiveSubscription> = None;
     loop {
         tokio::select! {
             _ = tick.tick() => {
                 if last_seen.elapsed() > agent_core::network::NETWORK_OFFLINE_TIMEOUT { return Ok(()); }
+                if subscription.is_some_and(|value| value.is_expired(now_unix_ms())) {
+                    subscription = None;
+                    tracing::info!(event = "STREAM_SUBSCRIPTION_EXPIRED");
+                }
                 connection.send(&protocol::network::Envelope {
                     protocol_version: protocol::network::PROTOCOL_VERSION,
                     message_id: new_message_id(),
@@ -631,19 +636,38 @@ async fn serve_heartbeat(
             }
             received = connection.recv() => {
                 match received? {
-                    Some(message) if matches!(message.payload, Some(protocol::network::envelope::Payload::Heartbeat(_))) => last_seen = std::time::Instant::now(),
-                    Some(message) if matches!(message.payload, Some(protocol::network::envelope::Payload::ScreenshotRequest(_))) => {
-                        connection.send(&protocol::network::Envelope {
-                            protocol_version: protocol::network::PROTOCOL_VERSION,
-                            message_id: new_message_id(),
-                            timestamp_ms: now_unix_ms(),
-                            payload: Some(protocol::network::envelope::Payload::CaptureError(protocol::network::CaptureError {
-                                code: "CAPTURE_PIPELINE_NOT_READY".to_owned(),
-                                message: "маршрутизация capture в Session Host ещё не завершена".to_owned(),
-                            })),
-                        }).await?;
-                    }
-                    Some(_) => {}
+                    Some(message) => match message.payload {
+                        Some(protocol::network::envelope::Payload::Heartbeat(_)) => {
+                            last_seen = std::time::Instant::now();
+                            if let Some(value) = &mut subscription { value.refresh(now_unix_ms()); }
+                        }
+                        Some(protocol::network::envelope::Payload::StreamSubscribe(request)) => {
+                            let visibility = match protocol::network::StreamMode::try_from(request.mode) {
+                                Ok(protocol::network::StreamMode::Thumbnail) => agent_core::stream::StreamVisibility::Visible,
+                                Ok(protocol::network::StreamMode::Selected) => agent_core::stream::StreamVisibility::Selected,
+                                _ => agent_core::stream::StreamVisibility::Hidden,
+                            };
+                            let schedule = agent_core::stream::negotiate_schedule(visibility, request.target_fps, request.max_width);
+                            subscription = Some(agent_core::stream::ActiveSubscription::new(schedule, now_unix_ms()));
+                            tracing::info!(fps = schedule.fps, max_width = schedule.max_width, event = "STREAM_SUBSCRIBED");
+                        }
+                        Some(protocol::network::envelope::Payload::StreamUnsubscribe(_)) => {
+                            subscription = None;
+                            tracing::info!(event = "STREAM_UNSUBSCRIBED");
+                        }
+                        Some(protocol::network::envelope::Payload::ScreenshotRequest(_)) => {
+                            connection.send(&protocol::network::Envelope {
+                                protocol_version: protocol::network::PROTOCOL_VERSION,
+                                message_id: new_message_id(),
+                                timestamp_ms: now_unix_ms(),
+                                payload: Some(protocol::network::envelope::Payload::CaptureError(protocol::network::CaptureError {
+                                    code: "CAPTURE_PIPELINE_NOT_READY".to_owned(),
+                                    message: "маршрутизация capture в Session Host ещё не завершена".to_owned(),
+                                })),
+                            }).await?;
+                        }
+                        _ => {}
+                    },
                     None => return Ok(()),
                 }
             }
