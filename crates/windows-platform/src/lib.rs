@@ -19,6 +19,7 @@ pub mod power;
 pub mod process;
 pub mod registry;
 pub mod security;
+pub mod service_control;
 pub mod sessions;
 pub mod shell;
 pub mod winget;

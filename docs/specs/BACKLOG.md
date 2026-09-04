@@ -20,7 +20,7 @@
 | T6 — Policy Engine + Focus Mode | spec-ready | done | not started | [T6_POLICY_ENGINE_FOCUS_MODE_SPEC.md](T6_POLICY_ENGINE_FOCUS_MODE_SPEC.md) |
 | — CHECKPOINT #2 demo | — | — | — | `product/03_EXECUTION_PLAN_90_DAYS.md` §22 |
 | T7 — Device Health & Software Management | spec-ready | done | not started | [T7_DEVICE_HEALTH_SOFTWARE_SPEC.md](T7_DEVICE_HEALTH_SOFTWARE_SPEC.md) |
-| T8 — Installer, Updater, Cloud v0 | spec-ready | not started | not started | [T8_INSTALLER_UPDATER_CLOUD_V0_SPEC.md](T8_INSTALLER_UPDATER_CLOUD_V0_SPEC.md) |
+| T8 — Installer, Updater, Cloud v0 | spec-ready | done | not started | [T8_INSTALLER_UPDATER_CLOUD_V0_SPEC.md](T8_INSTALLER_UPDATER_CLOUD_V0_SPEC.md) |
 | — Technical MVP complete / Go-No-Go #2 | — | — | — | `product/03_EXECUTION_PLAN_90_DAYS.md` §66–68 |
 | Phase A — Lesson Engine | not started (overview only) | not started | not started | [FUTURE_PHASES_OVERVIEW.md](FUTURE_PHASES_OVERVIEW.md) |
 | Phase B — AlfaCRM Integration | not started (overview only) | not started | not started | [FUTURE_PHASES_OVERVIEW.md](FUTURE_PHASES_OVERVIEW.md) |

@@ -33,7 +33,9 @@ docs/
 │       ├── 0009-t1-network-transport.md
 │       ├── 0010-t1-device-key-storage.md
 │       ├── 0011-t3-parameterized-local-capture.md
-│       └── 0012-t4-remote-input-session-boundary.md
+│       ├── 0012-t4-remote-input-session-boundary.md
+│       ├── 0013-t5-command-privilege-routing.md
+│       └── 0014-t6-windows-enforcement-providers.md
 │
 └── specs/                                 ← ЧТО именно реализовать, milestone за milestone
     ├── BACKLOG.md                         статус всех milestone'ов T0–T8+
@@ -44,6 +46,8 @@ docs/
     ├── README-T4.md                       текущий отчёт реализации T4
     ├── README-T5.md                       текущий отчёт реализации T5
     ├── README-T6.md                       текущий отчёт реализации T6
+    ├── README-T7.md                       текущий отчёт реализации T7
+    ├── README-T8.md                       текущий отчёт реализации T8
     ├── T0_SERVICE_SESSION_HOST_SPEC.md         [SPEC-READY]
     ├── T1_NETWORK_AND_DEVICE_DISCOVERY_SPEC.md [SPEC-READY]
     ├── T2_SCREEN_CAPTURE_DXGI_SPEC.md          [SPEC-READY]

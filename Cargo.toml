@@ -12,7 +12,7 @@ members = [
     "crates/windows-platform",
     "crates/policy-engine",
     "crates/device-health",
-    "crates/software-manager",
+    "crates/software-manager", "crates/updater",
 ]
 
 [workspace.package]

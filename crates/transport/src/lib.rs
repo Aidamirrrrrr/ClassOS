@@ -8,6 +8,7 @@ pub mod control;
 pub mod discovery;
 pub mod handshake;
 pub mod identity;
+pub mod lease;
 
 pub use control::{
     ControlConnection, ControlError, DeviceTransport, ServerControlConnection, TlsClient,
@@ -24,3 +25,4 @@ pub use handshake::{
     HandshakeError, VerifiedTeacher, build_device_hello, build_teacher_hello, verify_teacher_hello,
 };
 pub use identity::{DeviceIdentity, IdentityError};
+pub use lease::{ClassroomLease, LeaseError, Permission, SignedLease, authorize, issue};

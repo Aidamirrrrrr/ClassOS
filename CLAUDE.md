@@ -2,7 +2,7 @@
 
 ClassOS — система управления компьютерными классами для IT-школ (замена Veyon + Windows classroom control + со временем lesson-aware orchestration layer). Полный контекст — в `docs/README.md`.
 
-**Статус проекта: автоматическая реализация T0–T6 завершена, следующий milestone — T7.** Runtime-приёмка на реальной Windows 11 машине не проводилась ни для одного milestone и учитывается отдельно: T0 проверен только smoke-тестом в CI, а Windows enforcement T6 не выполнялся ни разу. Накопленный долг перечислен в `docs/specs/README-T<N>.md`. Спецификации milestone'ов T0–T8 готовы в `docs/specs/`. Не начинай или не меняй реализацию, пока не прочитал spec нужного milestone и `docs/architecture/01_TECHNICAL_ARCHITECTURE.md`.
+**Статус проекта: автоматическая реализация T0–T8 завершена; технический MVP написан, но не принят на реальном оборудовании.** Runtime-приёмка на реальной Windows 11 машине не проводилась ни для одного milestone и учитывается отдельно: T0 проверен только smoke-тестом в CI, а Windows enforcement T6 не выполнялся ни разу. Накопленный долг перечислен в `docs/specs/README-T<N>.md`. Спецификации milestone'ов T0–T8 готовы в `docs/specs/`. Не начинай или не меняй реализацию, пока не прочитал spec нужного milestone и `docs/architecture/01_TECHNICAL_ARCHITECTURE.md`.
 
 ## Обязательное чтение перед любой инженерной задачей
 
@@ -55,7 +55,7 @@ ClassOS — система управления компьютерными кл�
 | --- | --- |
 | Student Agent (Service + Session Host) | Rust, `windows-rs`, Tokio |
 | Teacher Console | Tauri 2 + React + TypeScript |
-| Cloud | Bun + TypeScript + PostgreSQL (Redis — только когда действительно понадобится) |
+| Cloud | Bun + TypeScript + PostgreSQL (Redis — только когда действительно понадобится); `services/cloud` |
 | Protocol | Protocol Buffers, versioned envelope, schema-first |
 | Monorepo tooling | pnpm workspaces (JS) + Cargo workspace (Rust), без Turborepo/Nx на старте — см. `architecture/adr/0008-monorepo-tooling.md` |
 
