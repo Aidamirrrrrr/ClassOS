@@ -1,5 +1,6 @@
 //! Adaptive scheduling screen stream для T3.
 
+use std::collections::VecDeque;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +48,60 @@ pub fn negotiate_schedule(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutboundPriority {
+    Control,
+    SelectedScreen,
+    ThumbnailScreen,
+}
+
+/// Ограниченная логическая очередь: control отправляется раньше кадров, а
+/// устаревшие screen frames удаляются при заполнении.
+#[derive(Debug)]
+pub struct PriorityQueue<T> {
+    control: VecDeque<T>,
+    selected: VecDeque<T>,
+    thumbnails: VecDeque<T>,
+    screen_capacity: usize,
+}
+
+impl<T> PriorityQueue<T> {
+    pub fn new(screen_capacity: usize) -> Self {
+        Self {
+            control: VecDeque::new(),
+            selected: VecDeque::new(),
+            thumbnails: VecDeque::new(),
+            screen_capacity: screen_capacity.max(1),
+        }
+    }
+
+    pub fn push(&mut self, priority: OutboundPriority, value: T) {
+        let queue = match priority {
+            OutboundPriority::Control => {
+                self.control.push_back(value);
+                return;
+            }
+            OutboundPriority::SelectedScreen => &mut self.selected,
+            OutboundPriority::ThumbnailScreen => &mut self.thumbnails,
+        };
+        if queue.len() >= self.screen_capacity {
+            queue.pop_front();
+        }
+        queue.push_back(value);
+    }
+
+    pub fn pop(&mut self) -> Option<T> {
+        self.control
+            .pop_front()
+            .or_else(|| self.selected.pop_front())
+            .or_else(|| self.thumbnails.pop_front())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.control.is_empty() && self.selected.is_empty() && self.thumbnails.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,5 +121,25 @@ mod tests {
         assert_eq!(thumbnail.max_width, 640);
         assert_eq!(selected.fps, 15);
         assert_eq!(selected.max_width, 3840);
+    }
+
+    #[test]
+    fn control_overtakes_screen_frames() {
+        let mut queue = PriorityQueue::new(2);
+        queue.push(OutboundPriority::ThumbnailScreen, "thumbnail");
+        queue.push(OutboundPriority::SelectedScreen, "selected");
+        queue.push(OutboundPriority::Control, "heartbeat");
+        assert_eq!(queue.pop(), Some("heartbeat"));
+        assert_eq!(queue.pop(), Some("selected"));
+        assert_eq!(queue.pop(), Some("thumbnail"));
+    }
+
+    #[test]
+    fn screen_queue_drops_stale_frames() {
+        let mut queue = PriorityQueue::new(1);
+        queue.push(OutboundPriority::ThumbnailScreen, 1);
+        queue.push(OutboundPriority::ThumbnailScreen, 2);
+        assert_eq!(queue.pop(), Some(2));
+        assert!(queue.is_empty());
     }
 }

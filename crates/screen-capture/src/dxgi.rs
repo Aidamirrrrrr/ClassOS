@@ -176,7 +176,12 @@ impl ScreenCapture for DxgiDesktopCapture {
                 };
                 let target =
                     &mut pixels[row * desc.Width as usize * 3..(row + 1) * desc.Width as usize * 3];
-                for (source, target) in source.chunks_exact(4).zip(target.chunks_exact_mut(3)) {
+                for (source, target) in source
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(target.as_chunks_mut::<3>().0)
+                {
                     target.copy_from_slice(&[source[2], source[1], source[0]]);
                 }
             }
