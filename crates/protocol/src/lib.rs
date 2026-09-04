@@ -280,6 +280,17 @@ pub mod network {
                 }),
                 command::Body::RestartDevice(RestartDevice {}),
                 command::Body::ShutdownDevice(ShutdownDevice {}),
+                command::Body::ApplyPolicy(ApplyPolicy {
+                    policy_id: "python-focus".to_owned(),
+                    compiled_policy: vec![1, 0],
+                }),
+                command::Body::RollbackPolicy(RollbackPolicy {
+                    snapshot_id: "snapshot-1".to_owned(),
+                }),
+                command::Body::FocusModeEnable(FocusModeEnable {
+                    allowed_application_ids: vec!["vscode".to_owned(), "python".to_owned()],
+                }),
+                command::Body::FocusModeDisable(FocusModeDisable {}),
             ];
             for body in bodies {
                 let envelope = Envelope {

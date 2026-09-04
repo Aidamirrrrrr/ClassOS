@@ -43,6 +43,7 @@ docs/
     ├── README-T3.md                       текущий отчёт реализации T3
     ├── README-T4.md                       текущий отчёт реализации T4
     ├── README-T5.md                       текущий отчёт реализации T5
+    ├── README-T6.md                       текущий отчёт реализации T6
     ├── T0_SERVICE_SESSION_HOST_SPEC.md         [SPEC-READY]
     ├── T1_NETWORK_AND_DEVICE_DISCOVERY_SPEC.md [SPEC-READY]
     ├── T2_SCREEN_CAPTURE_DXGI_SPEC.md          [SPEC-READY]
