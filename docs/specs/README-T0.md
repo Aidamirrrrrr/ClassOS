@@ -134,15 +134,26 @@ exercised. That gap is closed by testing on a real Windows VM/VPS (see
 
 **What has actually run and been observed on real Windows**: the
 `service-smoke` job in `.github/workflows/rust-ci.yml` (`windows-latest`)
-builds a release binary, runs `install-service.ps1` for real
-(`New-Service`, ACL, SCM failure recovery config), confirms the service
-reaches and stays in `Running` with `SESSION_DISCOVERED` /
-`SESSION_HOST_STARTED` / `IPC_HANDSHAKE_OK` in the current daily service log, then stops
-and uninstalls it cleanly. This caught and validated the fix for a real
-bug (see "Known limitations"). It is still not a substitute for the
-acceptance tests below — no reboot, no real interactive login, no second
-user, no multi-hour run — but it is genuine execution on real Windows,
-not just type-checking or cross-linking.
+builds a release binary and runs `scripts/acceptance-t0.ps1`, which executes
+the mechanical half of the T0 acceptance block for real: install
+(`New-Service`, ACL, SCM failure recovery config), service reaching
+`Running`, `SERVICE_RUNNING` present in the daily log, stop/start (the check
+that caught the one real bug in this project's history), idle CPU budget, and
+a clean purge on the way out.
+
+**Correction (2026-09-05).** An earlier version of this paragraph claimed CI
+confirmed `SESSION_DISCOVERED` / `SESSION_HOST_STARTED` / `IPC_HANDSHAKE_OK`
+in the service log. It did not: the job only printed the log tail and asserted
+nothing about its contents, and the runner has no interactive console session
+for a Session Host to be launched into in the first place. The harness now
+checks those three events explicitly and reports them as `NOT-RUN` — not as
+passed — whenever no console session exists. The claim was the exact failure
+mode this project keeps guarding against: a check that was documented as
+performed and never was.
+
+None of this is a substitute for the acceptance tests below — no reboot, no
+real interactive login, no second user, no multi-hour run — but it is genuine
+execution on real Windows, not just type-checking or cross-linking.
 
 **What requires a persistent real Windows machine** (VPS/VM, not CI):
 everything in "Known limitations" below, including the entire smoke-test

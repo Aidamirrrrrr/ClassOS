@@ -118,6 +118,45 @@ jobs:
       - name: cargo test (Teacher Console backend)
         run: cargo test --manifest-path apps/teacher/src-tauri/Cargo.toml
 
+  powershell:
+    name: windows-latest (PowerShell lint)
+    runs-on: windows-latest
+    # Установка, релиз и прогон приёмки целиком написаны на PowerShell, и до
+    # этой джобы ни одна строка не проверялась нигде: опечатка в
+    # install-classos.ps1 всплыла бы на чистой машине в кабинете.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Разбор синтаксиса всех скриптов
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $failed = $false
+          Get-ChildItem scripts -Filter *.ps1 -File | ForEach-Object {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) {
+              $failed = $true
+              Write-Host "== $($_.Name)" -ForegroundColor Red
+              $errors | ForEach-Object { Write-Host "  $($_.Extent.StartLineNumber): $($_.Message)" }
+            } else {
+              Write-Host "ok: $($_.Name)"
+            }
+          }
+          if ($failed) { throw "PowerShell-скрипты не разбираются" }
+
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
+          $issues = Invoke-ScriptAnalyzer -Path scripts -Recurse -Severity Error, Warning
+          if ($issues) {
+            $issues | Format-Table -AutoSize | Out-String | Write-Host
+            throw "PSScriptAnalyzer нашёл $($issues.Count) замечаний"
+          }
+          Write-Host "замечаний нет"
+
   console-bundle:
     name: windows-latest (Teacher Console installer)
     runs-on: windows-latest
@@ -202,39 +241,23 @@ jobs:
           Copy-Item target\x86_64-pc-windows-msvc\release\classos-session.exe target\release\
           Copy-Item target\x86_64-pc-windows-msvc\release\classos-updater.exe target\release\
 
-      - name: Install and start ClassOSAgent service
+      # Механическая часть блока T0 чеклиста приёмки. Раннер не имеет
+      # интерактивной консольной сессии, поэтому зависящие от Session Host
+      # пункты скрипт отметит NOT-RUN — они закрываются только на машине с
+      # реальным входом пользователя.
+      - name: Прогнать механическую часть T0
         shell: pwsh
-        run: .\scripts\install-service.ps1
+        run: .\scripts\acceptance-t0.ps1 -IdleSeconds 60 -RestartCycles 5
 
-      - name: Wait for SERVICE_RUNNING and inspect state
+      - name: Показать журнал службы
+        if: always()
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          Start-Sleep -Seconds 5
-          $svc = Get-Service -Name ClassOSAgent
-          $svc | Format-List Name, Status, StartType
-          if ($svc.Status -ne "Running") {
-            throw "ClassOSAgent did not reach Running status (actual: $($svc.Status))"
-          }
+          $log = Get-ChildItem "C:\ProgramData\ClassOS\logs" -Filter "service.log*" -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if ($log) { Get-Content $log.FullName -Tail 80 } else { Write-Host "журнала нет" }
 
-          # В runner нет интерактивной console session. Supervisor должен
-          # оставаться в NoInteractiveSession и не завершать Service.
-          # Login/logout/reboot/ACL проверяются только на постоянной VM.
-          Start-Sleep -Seconds 10
-          $svc = Get-Service -Name ClassOSAgent
-          if ($svc.Status -ne "Running") {
-            throw "ClassOSAgent crashed after startup (status: $($svc.Status))"
-          }
-
-          $logPath = Get-ChildItem "C:\ProgramData\ClassOS\logs" -Filter "service.log*" -File |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 1
-          if (-not $logPath) {
-            throw "Expected service log file was not found"
-          }
-          Get-Content $logPath.FullName -Tail 50
-
-      - name: Stop and uninstall service
+      - name: Снять службу, если прогон прервался
         if: always()
         shell: pwsh
         run: |
