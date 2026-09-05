@@ -2,22 +2,38 @@
 //! только для Windows; заглушка для других ОС сохраняет переносимость сборки.
 
 #[cfg(windows)]
+mod capture_check;
+#[cfg(windows)]
 mod ipc_client;
 #[cfg(windows)]
 mod runtime;
 
 #[cfg(windows)]
 fn main() {
-    use agent_session::cli::Cli;
+    use agent_session::cli::{Cli, Mode};
     use clap::Parser;
 
     let cli = Cli::parse();
+    let mode = match cli.mode() {
+        Ok(mode) => mode,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+    };
+
+    // Диагностика печатает результат человеку в консоль и не должна писать
+    // в журнал службы: её запускают вручную и часто до установки агента.
+    let (session_id, pipe) = match mode {
+        Mode::CheckCapture => std::process::exit(capture_check::run()),
+        Mode::SessionHost { session_id, pipe } => (session_id, pipe),
+    };
 
     let log_dir = agent_core::config::log_dir();
     let _ = std::fs::create_dir_all(&log_dir);
     let appender = tracing_appender::rolling::Builder::new()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
-        .filename_prefix(format!("session-{}.log", cli.session_id))
+        .filename_prefix(format!("session-{session_id}.log"))
         .max_log_files(7)
         .build(&log_dir);
     let _logging_guard = match appender {
@@ -53,7 +69,7 @@ fn main() {
         }
     };
 
-    if let Err(err) = rt.block_on(runtime::run(cli.session_id, &cli.pipe)) {
+    if let Err(err) = rt.block_on(runtime::run(session_id, &pipe)) {
         tracing::error!(error = %err, "session host runtime exited with error");
         std::process::exit(1);
     }
