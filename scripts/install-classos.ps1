@@ -61,7 +61,30 @@ function Install-Binaries {
         if (-not (Test-Path $source)) { throw "Не найден $name в $SourceDir" }
         Copy-Item $source (Join-Path $InstallDir $name) -Force
     }
+    Protect-InstallDir
     Write-Host "Бинарники установлены в $InstallDir."
+}
+
+function Protect-InstallDir {
+    # Без этого ученик с обычной учётной записью может подменить бинарник
+    # службы, то есть получить выполнение кода от LocalSystem при следующем
+    # старте (threat model §115, чеклист приёмки §12.1). Наследование
+    # отключается явно: унаследованные разрешения родителя могут давать
+    # запись группам, которых здесь быть не должно.
+    $acl = Get-Acl $InstallDir
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($entry in @(
+        @{ Identity = "BUILTIN\Administrators"; Rights = "FullControl" },
+        @{ Identity = "NT AUTHORITY\SYSTEM"; Rights = "FullControl" },
+        @{ Identity = "BUILTIN\Users"; Rights = "ReadAndExecute" }
+    )) {
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $entry.Identity, $entry.Rights, "ContainerInherit,ObjectInherit", "None", "Allow"
+        )
+        $acl.AddAccessRule($rule)
+    }
+    Set-Acl $InstallDir $acl
+    Write-Host "Права на $InstallDir ограничены: обычным пользователям только чтение и запуск."
 }
 
 function Register-Service {

@@ -75,6 +75,22 @@ export class PostgresStore implements Store {
     await this.sql.unsafe(schemaSql);
   }
 
+  /**
+   * Применена ли схема к этой базе.
+   *
+   * Нужна развёртыванию, чтобы повторный bootstrap не падал на `CREATE TABLE`.
+   * Схема намеренно остаётся строгой, без `IF NOT EXISTS`: тихо пропущенная
+   * таблица другой формы выглядела бы как успешная миграция, а расхождение
+   * всплыло бы много позже и не здесь.
+   */
+  async isInitialized(): Promise<boolean> {
+    const rows = await this.sql`
+      SELECT 1 FROM information_schema.tables
+      WHERE table_schema = current_schema() AND table_name = 'users'
+    `;
+    return rows.length > 0;
+  }
+
   async close(): Promise<void> {
     await this.sql.end();
   }

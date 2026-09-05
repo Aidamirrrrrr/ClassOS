@@ -91,6 +91,36 @@ fn main() {
                 }
             }
         }
+        Command::ResetEnrollment => {
+            // Тот же уровень доступа, что и у установки агента: кто может
+            // сбросить регистрацию, тот может и переустановить агент целиком
+            // (ADR-0018).
+            match windows_platform::security::current_process_is_elevated() {
+                Ok(true) => {}
+                Ok(false) => {
+                    eprintln!(
+                        "ClassOS Recovery: требуются права локального администратора. \
+Запустите команду из консоли, открытой от имени администратора."
+                    );
+                    std::process::exit(1);
+                }
+                Err(err) => {
+                    eprintln!("не удалось проверить права: {err}");
+                    std::process::exit(1);
+                }
+            }
+            match identity_store::reset_enrollment() {
+                Ok(true) => println!(
+                    "ClassOS Recovery: регистрация сброшена. Задайте новый код \
+командой `classos-service enroll --code <код>` и перезапустите службу."
+                ),
+                Ok(false) => println!("ClassOS Recovery: устройство и так не зарегистрировано."),
+                Err(err) => {
+                    eprintln!("ClassOS Recovery: не удалось сбросить регистрацию: {err}");
+                    std::process::exit(1);
+                }
+            }
+        }
     }
 }
 

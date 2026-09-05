@@ -58,6 +58,13 @@ suite("PostgresStore", () => {
     expect(found?.id).toBe(userId);
   });
 
+  // `bootstrap.ts` пропускает миграцию по этому признаку. Схема строгая, без
+  // `IF NOT EXISTS`, поэтому ошибочное `false` уронило бы повторное
+  // развёртывание на `CREATE TABLE`, а не привело бы к тихому расхождению.
+  test("применённая схема распознаётся как применённая", async () => {
+    expect(await store.isInitialized()).toBe(true);
+  });
+
   test("сессия хранится хешем токена и возвращает срок в миллисекундах", async () => {
     const tokenHash = Buffer.alloc(32, 7);
     const expiresAtUnixMs = Date.now() + 60_000;

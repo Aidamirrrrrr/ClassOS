@@ -115,6 +115,28 @@ impl DeviceCredential {
         expected_certificate_der: &[u8],
         now_unix_ms: i64,
     ) -> Result<Self, AuthorizationError> {
+        Self::decode_and_verify_fingerprint(
+            encoded,
+            issuer_public_key,
+            expected_device_id,
+            &Sha256::digest(expected_certificate_der).into(),
+            now_unix_ms,
+        )
+    }
+
+    /// Разбор credential, когда доступен только отпечаток сертификата.
+    ///
+    /// Teacher Console хранит закреплённый отпечаток, а не сам сертификат:
+    /// сертификат приходит заново с каждым TLS-соединением. Проверка при этом
+    /// не ослабевает — отпечаток и так является тем, что подписано внутри
+    /// credential, а [`Self::decode_and_verify`] лишь вычисляет его из DER.
+    pub fn decode_and_verify_fingerprint(
+        encoded: &[u8],
+        issuer_public_key: &[u8; 32],
+        expected_device_id: &str,
+        expected_certificate_fingerprint: &[u8; 32],
+        now_unix_ms: i64,
+    ) -> Result<Self, AuthorizationError> {
         if encoded.len() < 1 + 2 + 32 + 8 + SIGNATURE_SIZE {
             return Err(AuthorizationError::InvalidCredential);
         }
@@ -130,8 +152,7 @@ impl DeviceCredential {
 
         let credential = decode_payload(payload, signature.to_bytes())?;
         if credential.device_id != expected_device_id
-            || credential.certificate_fingerprint
-                != <[u8; 32]>::from(Sha256::digest(expected_certificate_der))
+            || &credential.certificate_fingerprint != expected_certificate_fingerprint
         {
             return Err(AuthorizationError::DeviceMismatch);
         }
@@ -252,6 +273,56 @@ mod tests {
                 5_000,
             ),
             Err(AuthorizationError::DeviceMismatch)
+        ));
+    }
+
+    /// Консоль восстанавливает credential с диска, имея только отпечаток,
+    /// поэтому оба пути обязаны давать один и тот же результат.
+    #[test]
+    fn fingerprint_path_matches_certificate_path() {
+        let authority = TeacherAuthority::generate().unwrap();
+        let credential = authority.issue_device_credential("device-1", b"certificate-a", 10_000);
+        let encoded = credential.encode();
+        let fingerprint: [u8; 32] = Sha256::digest(b"certificate-a").into();
+
+        let by_certificate = DeviceCredential::decode_and_verify(
+            &encoded,
+            &authority.public_key(),
+            "device-1",
+            b"certificate-a",
+            5_000,
+        )
+        .unwrap();
+        let by_fingerprint = DeviceCredential::decode_and_verify_fingerprint(
+            &encoded,
+            &authority.public_key(),
+            "device-1",
+            &fingerprint,
+            5_000,
+        )
+        .unwrap();
+        assert_eq!(by_certificate, by_fingerprint);
+
+        let other: [u8; 32] = Sha256::digest(b"certificate-b").into();
+        assert!(matches!(
+            DeviceCredential::decode_and_verify_fingerprint(
+                &encoded,
+                &authority.public_key(),
+                "device-1",
+                &other,
+                5_000,
+            ),
+            Err(AuthorizationError::DeviceMismatch)
+        ));
+        assert!(matches!(
+            DeviceCredential::decode_and_verify_fingerprint(
+                &encoded,
+                &authority.public_key(),
+                "device-1",
+                &fingerprint,
+                10_000,
+            ),
+            Err(AuthorizationError::ExpiredCredential)
         ));
     }
 

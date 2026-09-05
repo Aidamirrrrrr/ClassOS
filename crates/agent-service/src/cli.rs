@@ -24,6 +24,15 @@ pub enum Command {
     /// Локальный emergency recovery: удалить активную policy после проверки
     /// прав администратора в Windows runtime. Не доступен по сети.
     RecoverPolicy,
+    /// Локальный break-glass enrollment (ADR-0018): забыть регистрацию и
+    /// вернуть устройство в состояние ожидания одноразового кода.
+    ///
+    /// Нужен, когда Teacher Console потеряла ключ издателя: устройство,
+    /// прошедшее enrollment, второй раз его не проходит, и без этой команды
+    /// единственным выходом было удаление файлов состояния вручную. Сетевого
+    /// маршрута нет намеренно — иначе это стало бы способом отобрать
+    /// устройство у его владельца.
+    ResetEnrollment,
 }
 
 #[cfg(test)]
@@ -57,5 +66,11 @@ mod tests {
     fn parses_local_policy_recovery() {
         let cli = Cli::parse_from(["classos-service", "recover-policy"]);
         assert_eq!(cli.command, Command::RecoverPolicy);
+    }
+
+    #[test]
+    fn parses_local_enrollment_reset() {
+        let cli = Cli::parse_from(["classos-service", "reset-enrollment"]);
+        assert_eq!(cli.command, Command::ResetEnrollment);
     }
 }

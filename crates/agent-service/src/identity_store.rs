@@ -153,6 +153,34 @@ pub fn load_enrollment() -> Result<Option<EnrollmentMaterial>, IdentityStoreErro
     }
 }
 
+/// Break-glass ADR-0018: забывает регистрацию устройства.
+///
+/// Удаляется только материал enrollment. Device identity (сертификат и
+/// закрытый ключ) остаётся на месте намеренно: `device_id` устройства не
+/// должен меняться от восстановительной операции, иначе в Cloud и в журналах
+/// появится второе устройство вместо прежнего.
+///
+/// Возвращает `true`, если что-то действительно было удалено: повторный вызов
+/// не является ошибкой, но и не должен сообщать об успешном сбросе того,
+/// чего не было.
+pub fn reset_enrollment() -> Result<bool, IdentityStoreError> {
+    let mut removed = false;
+    for path in [
+        agent_core::config::device_credential_path(),
+        agent_core::config::teacher_issuer_key_path(),
+        agent_core::config::lease_issuer_key_path(),
+        agent_core::config::room_id_path(),
+        agent_core::config::pending_enrollment_code_path(),
+    ] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed = true,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(removed)
+}
+
 pub fn save_enrollment(material: &EnrollmentMaterial) -> Result<(), IdentityStoreError> {
     let credential_path = agent_core::config::device_credential_path();
     let issuer_path = agent_core::config::teacher_issuer_key_path();

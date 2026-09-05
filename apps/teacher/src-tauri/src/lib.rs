@@ -5,13 +5,13 @@ mod cloud;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use agent_core::network::{EnrollmentAuthority, EnrollmentContext, DEFAULT_ENROLLMENT_TTL};
 use protocol::network::{envelope, EnrollmentErrorCode, EnrollmentResult, Envelope};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::http::{header, Response, StatusCode};
 use tauri::{Emitter, State};
@@ -38,7 +38,9 @@ struct AppState {
     /// локального enrollment (ADR-0007).
     cloud: Mutex<Option<cloud::CloudSession>>,
     enrollment: Mutex<EnrollmentAuthority>,
-    devices: Mutex<HashMap<String, EnrolledDevice>>,
+    /// Зарегистрированные устройства. `Arc`, потому что фоновое обнаружение
+    /// обновляет их адреса, переживая вызов команды, который его запустил.
+    devices: Arc<Mutex<HashMap<String, EnrolledDevice>>>,
     frames: Arc<Mutex<HashMap<String, StoredFrame>>>,
     streams: Arc<Mutex<HashMap<String, CancellationToken>>>,
     remote_controls: Arc<Mutex<HashMap<String, RemoteControlHandle>>>,
@@ -153,11 +155,27 @@ fn store_frame(
     }
 }
 
+/// Каталог постоянного состояния консоли.
+///
+/// Рабочий каталог для этого не годится: он зависит от того, откуда запустили
+/// приложение, а вместе с ним «переезжает» ключ издателя — то есть запуск из
+/// другого места молча отключал бы весь уже зарегистрированный класс.
+/// `CLASSOS_TEACHER_STATE_DIR` оставлен для тестов и переносимых стендов.
+fn state_dir() -> PathBuf {
+    if let Some(explicit) = std::env::var_os("CLASSOS_TEACHER_STATE_DIR") {
+        return PathBuf::from(explicit);
+    }
+    #[cfg(windows)]
+    let base = std::env::var_os("APPDATA").map(PathBuf::from);
+    #[cfg(not(windows))]
+    let base = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"));
+    base.unwrap_or_else(|| PathBuf::from("."))
+        .join("ClassOS")
+        .join("TeacherConsole")
+}
+
 fn authority_path() -> PathBuf {
-    std::env::var_os("CLASSOS_TEACHER_STATE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-        .join("teacher-authority.key")
+    state_dir().join("teacher-authority.key")
 }
 
 fn load_authority() -> TeacherAuthority {
@@ -229,6 +247,143 @@ where
 /// Сколько ждать ответ устройства на запрос.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 
+fn bytes_to_hex(value: &[u8]) -> String {
+    value.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Версия формата реестра устройств на диске.
+const DEVICE_REGISTRY_VERSION: u32 = 1;
+
+fn devices_path() -> PathBuf {
+    state_dir().join("enrolled-devices.json")
+}
+
+/// Строка реестра. Сертификат целиком не хранится: закреплён отпечаток, а сам
+/// сертификат приходит заново с каждым TLS-соединением.
+#[derive(Serialize, Deserialize)]
+struct StoredDevice {
+    device_id: String,
+    credential: String,
+    fingerprint: String,
+    ip: String,
+    control_port: u16,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DeviceRegistry {
+    version: u32,
+    devices: Vec<StoredDevice>,
+}
+
+/// Восстанавливает зарегистрированные устройства с диска.
+///
+/// Без этого перезапуск консоли терял credential и закреплённый отпечаток, а
+/// вернуть их было нечем: устройство, прошедшее enrollment, больше никогда не
+/// присылает `EnrollmentRequest`, поэтому повторная регистрация невозможна и
+/// класс приходилось бы переустанавливать руками.
+///
+/// Каждая запись проверяется тем же способом, что и при выдаче: чужой или
+/// протухший credential не восстанавливается, а отбрасывается с записью в
+/// журнал — молча пропавшее устройство хуже, чем названная причина.
+fn load_devices(issuer_public_key: &[u8; 32], now_unix_ms: i64) -> HashMap<String, EnrolledDevice> {
+    load_devices_from(&devices_path(), issuer_public_key, now_unix_ms)
+}
+
+fn load_devices_from(
+    path: &Path,
+    issuer_public_key: &[u8; 32],
+    now_unix_ms: i64,
+) -> HashMap<String, EnrolledDevice> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    let registry: DeviceRegistry = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("реестр устройств повреждён ({path:?}): {error}");
+            return HashMap::new();
+        }
+    };
+    if registry.version != DEVICE_REGISTRY_VERSION {
+        eprintln!(
+            "реестр устройств версии {} не поддерживается — ожидалась {}",
+            registry.version, DEVICE_REGISTRY_VERSION
+        );
+        return HashMap::new();
+    }
+
+    let mut devices = HashMap::new();
+    for stored in registry.devices {
+        let Some(encoded) = hex_to_bytes(&stored.credential) else {
+            eprintln!("устройство {}: повреждённый credential", stored.device_id);
+            continue;
+        };
+        let Some(fingerprint) = hex_to_bytes(&stored.fingerprint)
+            .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
+        else {
+            eprintln!("устройство {}: повреждённый отпечаток", stored.device_id);
+            continue;
+        };
+        match DeviceCredential::decode_and_verify_fingerprint(
+            &encoded,
+            issuer_public_key,
+            &stored.device_id,
+            &fingerprint,
+            now_unix_ms,
+        ) {
+            Ok(credential) => {
+                devices.insert(
+                    stored.device_id,
+                    EnrolledDevice {
+                        credential,
+                        fingerprint,
+                        ip: stored.ip,
+                        control_port: stored.control_port,
+                    },
+                );
+            }
+            Err(error) => eprintln!(
+                "устройство {} не восстановлено: {error}; потребуется повторная регистрация",
+                stored.device_id
+            ),
+        }
+    }
+    devices
+}
+
+/// Записывает реестр целиком: он мал, а частичная запись означала бы
+/// устройство, которое нельзя ни использовать, ни зарегистрировать заново.
+fn save_devices(devices: &HashMap<String, EnrolledDevice>) {
+    save_devices_to(&devices_path(), devices);
+}
+
+fn save_devices_to(path: &Path, devices: &HashMap<String, EnrolledDevice>) {
+    let registry = DeviceRegistry {
+        version: DEVICE_REGISTRY_VERSION,
+        devices: devices
+            .iter()
+            .map(|(device_id, device)| StoredDevice {
+                device_id: device_id.clone(),
+                credential: bytes_to_hex(&device.credential.encode()),
+                fingerprint: bytes_to_hex(&device.fingerprint),
+                ip: device.ip.clone(),
+                control_port: device.control_port,
+            })
+            .collect(),
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match serde_json::to_string_pretty(&registry) {
+        Ok(text) => {
+            if let Err(error) = std::fs::write(path, text) {
+                eprintln!("не удалось сохранить реестр устройств: {error}");
+            }
+        }
+        Err(error) => eprintln!("не удалось сериализовать реестр устройств: {error}"),
+    }
+}
+
 fn hex_to_bytes(value: &str) -> Option<Vec<u8>> {
     if !value.len().is_multiple_of(2) || value.is_empty() {
         return None;
@@ -282,9 +437,16 @@ fn start_discovery(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<
         }
     }
 
+    let devices = Arc::clone(&state.devices);
     tokio::spawn(async move {
         let result = discovery::listen_loop(Default::default(), cancellation, |received| {
-            let _ = app.emit("device-discovered", device_view(received));
+            let view = device_view(received);
+            // Адрес устройства меняется при перезагрузке и продлении аренды
+            // DHCP. Без этого обновления сохранённая запись указывала бы на
+            // прежний адрес, и устройство было бы недостижимо, оставаясь
+            // видимым в списке.
+            refresh_device_address(&devices, &view);
+            let _ = app.emit("device-discovered", view);
         })
         .await;
         if let Err(error) = result {
@@ -295,6 +457,32 @@ fn start_discovery(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<
         }
     });
     Ok(())
+}
+
+/// Переносит новый адрес объявления в зарегистрированную запись.
+///
+/// Объявление остаётся недоверенным: оно может лишь указать, куда идти к уже
+/// известному `device_id`, а закреплённый отпечаток сертификата и credential
+/// не меняются — подменить устройство подделкой объявления по-прежнему нельзя.
+fn refresh_device_address(
+    devices: &Arc<Mutex<HashMap<String, EnrolledDevice>>>,
+    view: &DeviceView,
+) {
+    let Ok(port) = u16::try_from(view.control_port) else {
+        return;
+    };
+    let Ok(mut devices) = devices.lock() else {
+        return;
+    };
+    let Some(device) = devices.get_mut(&view.device_id) else {
+        return;
+    };
+    if device.ip == view.ip && device.control_port == port {
+        return;
+    }
+    device.ip = view.ip.clone();
+    device.control_port = port;
+    save_devices(&devices);
 }
 
 /// Останавливает непрерывное обнаружение.
@@ -434,11 +622,9 @@ async fn enroll_device(
         .send(&result)
         .await
         .map_err(|error| error.to_string())?;
-    state
-        .devices
-        .lock()
-        .map_err(|_| "состояние занято")?
-        .insert(
+    {
+        let mut devices = state.devices.lock().map_err(|_| "состояние занято")?;
+        devices.insert(
             device_id,
             EnrolledDevice {
                 credential,
@@ -447,6 +633,10 @@ async fn enroll_device(
                 control_port: port,
             },
         );
+        // Сразу на диск: перезапуск консоли между регистрацией и первой
+        // командой не должен требовать обхода класса руками.
+        save_devices(&devices);
+    }
     Ok("устройство успешно зарегистрировано".to_owned())
 }
 
@@ -1321,14 +1511,18 @@ pub fn run() {
 
     let frames = Arc::new(Mutex::new(HashMap::new()));
     let stream_frames = Arc::clone(&frames);
+    // Ключ издателя восстанавливается первым: реестр устройств проверяется
+    // именно им, и без совпадения ключа ни одна запись не годится.
+    let authority = load_authority();
+    let devices = load_devices(&authority.public_key(), now_ms());
     tauri::Builder::default()
         .manage(AppState {
-            authority: Mutex::new(load_authority()),
+            authority: Mutex::new(authority),
             lease: Mutex::new(None),
             discovery: Mutex::new(None),
             cloud: Mutex::new(None),
             enrollment: Mutex::new(EnrollmentAuthority::default()),
-            devices: Mutex::new(HashMap::new()),
+            devices: Arc::new(Mutex::new(devices)),
             frames,
             streams: Arc::new(Mutex::new(HashMap::new())),
             remote_controls: Arc::new(Mutex::new(HashMap::new())),
@@ -1380,4 +1574,133 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("не удалось запустить Teacher Console");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_path(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("classos-{name}-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    fn enrolled(authority: &TeacherAuthority, device_id: &str, expires: i64) -> EnrolledDevice {
+        let certificate = format!("certificate-of-{device_id}");
+        let credential =
+            authority.issue_device_credential(device_id, certificate.as_bytes(), expires);
+        EnrolledDevice {
+            fingerprint: Sha256::digest(certificate.as_bytes()).into(),
+            credential,
+            ip: "192.168.1.10".to_owned(),
+            control_port: 45901,
+        }
+    }
+
+    /// Перезапуск консоли обязан сохранять доступ к классу: устройство,
+    /// прошедшее enrollment, второй раз его не проходит, и потерянный
+    /// credential означал бы обход всех машин руками.
+    #[test]
+    fn registry_survives_restart() {
+        let authority = TeacherAuthority::generate().unwrap();
+        let path = temp_path("registry-restart");
+        let mut devices = HashMap::new();
+        devices.insert(
+            "device-1".to_owned(),
+            enrolled(&authority, "device-1", 10_000),
+        );
+        save_devices_to(&path, &devices);
+
+        let restored = load_devices_from(&path, &authority.public_key(), 5_000);
+        assert_eq!(restored.len(), 1);
+        let device = restored.get("device-1").unwrap();
+        assert_eq!(device.control_port, 45901);
+        assert_eq!(device.fingerprint, devices["device-1"].fingerprint);
+        assert_eq!(
+            device.credential.encode(),
+            devices["device-1"].credential.encode()
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Ключ издателя сменился — значит записи выпущены не этой консолью и
+    /// подключиться по ним всё равно не выйдет.
+    #[test]
+    fn registry_rejects_credentials_of_another_issuer() {
+        let authority = TeacherAuthority::generate().unwrap();
+        let stranger = TeacherAuthority::generate().unwrap();
+        let path = temp_path("registry-issuer");
+        let mut devices = HashMap::new();
+        devices.insert(
+            "device-1".to_owned(),
+            enrolled(&authority, "device-1", 10_000),
+        );
+        save_devices_to(&path, &devices);
+
+        assert!(load_devices_from(&path, &stranger.public_key(), 5_000).is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn registry_drops_expired_credentials() {
+        let authority = TeacherAuthority::generate().unwrap();
+        let path = temp_path("registry-expired");
+        let mut devices = HashMap::new();
+        devices.insert(
+            "device-1".to_owned(),
+            enrolled(&authority, "device-1", 1_000),
+        );
+        save_devices_to(&path, &devices);
+
+        assert!(load_devices_from(&path, &authority.public_key(), 5_000).is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Устройство сменило адрес после перезагрузки: запись обязана указывать
+    /// на новый адрес, иначе устройство видно в списке, но недостижимо.
+    #[test]
+    fn discovery_refreshes_stored_address() {
+        let authority = TeacherAuthority::generate().unwrap();
+        let mut initial = HashMap::new();
+        initial.insert(
+            "device-1".to_owned(),
+            enrolled(&authority, "device-1", 10_000),
+        );
+        let devices = Arc::new(Mutex::new(initial));
+
+        refresh_device_address(
+            &devices,
+            &DeviceView {
+                device_id: "device-1".to_owned(),
+                hostname: "PC-01".to_owned(),
+                ip: "192.168.1.55".to_owned(),
+                control_port: 45901,
+                room_hint: String::new(),
+                agent_version: "0.1.0".to_owned(),
+            },
+        );
+
+        let devices = devices.lock().unwrap();
+        assert_eq!(devices["device-1"].ip, "192.168.1.55");
+    }
+
+    /// Неизвестное устройство не появляется в реестре от одного объявления:
+    /// discovery остаётся недоверенным каналом.
+    #[test]
+    fn discovery_never_adds_unknown_device() {
+        let devices = Arc::new(Mutex::new(HashMap::new()));
+        refresh_device_address(
+            &devices,
+            &DeviceView {
+                device_id: "unknown".to_owned(),
+                hostname: "PC-99".to_owned(),
+                ip: "192.168.1.99".to_owned(),
+                control_port: 45901,
+                room_hint: String::new(),
+                agent_version: "0.1.0".to_owned(),
+            },
+        );
+        assert!(devices.lock().unwrap().is_empty());
+    }
 }

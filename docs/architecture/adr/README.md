@@ -45,5 +45,6 @@ ADR фиксирует **необратимое или дорогое в раз�
 | [0015](0015-t8-agent-update-channel.md) | Канал получения обновлений агентом | Accepted |
 | [0016](0016-t8-lease-authorization-on-device.md) | Проверка прав преподавателя на устройстве по classroom lease | Accepted |
 | [0017](0017-t6-applocker-rule-conditions.md) | Условия правил AppLocker: где именно разрешён исполняемый файл | Accepted |
+| [0018](0018-enrollment-window-and-credential-reissue.md) | Аутентификация окна enrollment и перевыпуск device credential | Accepted |
 
-Следующий свободный номер: **0018**.
+Следующий свободный номер: **0019**.
