@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2E4A8F"/>
+      <stop offset="1" stop-color="#1B2C5A"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
+  <!-- Сетка экранов класса: четыре монитора, один выделен как выбранный. -->
+  <rect x="196" y="228" width="290" height="212" rx="30" fill="#FFFFFF" opacity="0.93"/>
+  <rect x="538" y="228" width="290" height="212" rx="30" fill="#FFFFFF" opacity="0.93"/>
+  <rect x="196" y="584" width="290" height="212" rx="30" fill="#FFFFFF" opacity="0.93"/>
+  <rect x="538" y="584" width="290" height="212" rx="30" fill="#4ADE80"/>
+</svg>

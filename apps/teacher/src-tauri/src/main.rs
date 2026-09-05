@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    appsteacher_lib::run()
+    classos_console_lib::run()
 }

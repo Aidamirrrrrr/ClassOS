@@ -318,7 +318,7 @@ function App() {
 
   return <main className="container">
     <h1>ClassOS Teacher Console</h1>
-    <p className="subtitle">Обнаружение, enrollment и live screen stream</p>
+    <p className="subtitle">Экраны класса, режимы урока и состояние компьютеров</p>
     <section className="panel" aria-label="Cloud">
       <h2>Cloud</h2>
       {memberships.length === 0 ? <>

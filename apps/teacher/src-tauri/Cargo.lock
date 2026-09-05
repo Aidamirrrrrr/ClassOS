@@ -65,28 +65,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "appsteacher"
-version = "0.1.0"
-dependencies = [
- "agent-core",
- "base64 0.23.1",
- "policy-engine",
- "protocol",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tauri",
- "tauri-build",
- "tauri-plugin-opener",
- "thiserror 2.0.20",
- "tokio",
- "tokio-util",
- "transport",
- "uuid",
-]
-
-[[package]]
 name = "asn1-rs"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -565,6 +543,28 @@ dependencies = [
  "num-traits",
  "serde",
  "windows-link 0.2.1",
+]
+
+[[package]]
+name = "classos-console"
+version = "0.1.0"
+dependencies = [
+ "agent-core",
+ "base64 0.23.1",
+ "policy-engine",
+ "protocol",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-opener",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "transport",
+ "uuid",
 ]
 
 [[package]]
