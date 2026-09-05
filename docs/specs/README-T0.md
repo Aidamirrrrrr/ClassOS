@@ -143,13 +143,19 @@ a clean purge on the way out.
 
 **Correction (2026-09-05).** An earlier version of this paragraph claimed CI
 confirmed `SESSION_DISCOVERED` / `SESSION_HOST_STARTED` / `IPC_HANDSHAKE_OK`
-in the service log. It did not: the job only printed the log tail and asserted
-nothing about its contents, and the runner has no interactive console session
-for a Session Host to be launched into in the first place. The harness now
-checks those three events explicitly and reports them as `NOT-RUN` — not as
-passed — whenever no console session exists. The claim was the exact failure
-mode this project keeps guarding against: a check that was documented as
-performed and never was.
+in the service log. It did not — the job only printed the log tail and
+asserted nothing about its contents. The claim happened to be true in
+substance, which is precisely what made it dangerous: a documented check that
+nothing actually performed. The harness now asserts those three events, and
+reports them as `NOT-RUN` — never as passed — on a machine with no console
+session.
+
+**First observed run (2026-09-05, CI run `33970228765`):** 13 checks passed,
+0 failed, 9 `NOT-RUN`. The runner does have a console session, so the Session
+Host really is launched there: killing it produced a replacement in **20.4 s**
+(inside the 30 s requirement, outside the 10 s target noted in the checklist —
+worth re-measuring on real hardware). Service handles moved 160 → 164 across
+5 restart cycles; idle CPU was 0% over 60 s.
 
 None of this is a substitute for the acceptance tests below — no reboot, no
 real interactive login, no second user, no multi-hour run — but it is genuine

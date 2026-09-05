@@ -1,26 +1,376 @@
-:root { font-family: Inter, system-ui, sans-serif; color: #172033; background: #eef2f7; }
+/*
+ * Оболочка приложения, а не прокручиваемая страница: главное здесь — сетка
+ * экранов класса, и она обязана занимать окно целиком. Настройка вынесена на
+ * отдельный экран, потому что её делают один раз, а класс открывают каждое
+ * занятие.
+ */
+
+:root {
+  --bg: #0f1523;
+  --surface: #182031;
+  --surface-2: #202a3d;
+  --line: #2c3752;
+  --text: #e8edf6;
+  --muted: #97a3b8;
+  --accent: #3b82f6;
+  --accent-strong: #2563eb;
+  --danger: #f87171;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
 body { margin: 0; min-width: 320px; }
-.container { max-width: 760px; margin: 0 auto; padding: 48px 24px; }
-h1 { margin-bottom: 8px; } h2 { margin-bottom: 4px; }
-.subtitle { color: #5f6b7a; }
-.panel { background: white; border-radius: 14px; padding: 20px; margin-top: 18px; box-shadow: 0 4px 18px #17203312; }
-button { border: 0; border-radius: 8px; padding: 11px 16px; margin: 4px 8px 4px 0; color: white; background: #2563eb; cursor: pointer; }
-button:disabled { opacity: .5; cursor: not-allowed; }
-label { display: block; margin: 16px 0; color: #5f6b7a; }
-input { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; padding: 10px; border: 1px solid #ccd4df; border-radius: 8px; font-size: 16px; }
-.code { font-size: 20px; } .status { margin-top: 22px; color: #334155; }
-.screenshot { display: block; width: 100%; margin-top: 18px; border-radius: 8px; background: #111827; }
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 18px; }
-.device-card { display: grid; gap: 7px; min-height: 160px; margin: 0; padding: 14px; color: #172033; text-align: left; background: white; box-shadow: 0 4px 18px #17203312; }
-.device-card.selected { outline: 3px solid #93c5fd; }
-.device-card small { color: #5f6b7a; }
-.device-select { margin: 0; color: #334155; cursor: pointer; }
-.device-select input { display: inline; width: auto; margin: 0 6px 0 0; }
-.thumbnail { width: 100%; min-height: 96px; object-fit: contain; background: #111827; border-radius: 6px; }
 
-.health { width: 100%; border-collapse: collapse; margin-top: 0.75rem; font-size: 0.9rem; }
-.health th, .health td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #8883; }
+#root { height: 100vh; }
 
-.membership { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid #e2e8f0; }
-.membership span { flex: 1 1 200px; color: #334155; }
+/* Экран поделён по вертикали: шапка, полоса режима, рабочая область,
+   нижняя панель. Прокручивается только рабочая область. */
+.app {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  height: 100vh;
+  background: var(--bg);
+}
+
+/* --- шапка --------------------------------------------------------------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 0 20px;
+  height: 56px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand { display: flex; align-items: center; gap: 10px; }
+
+/* Знак повторяет иконку приложения: сетка экранов класса. */
+.brand-mark {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background:
+    linear-gradient(var(--ok), var(--ok)) 100% 100% / 8px 8px no-repeat,
+    linear-gradient(#fff, #fff) 0 0 / 8px 8px no-repeat,
+    linear-gradient(#fff, #fff) 100% 0 / 8px 8px no-repeat,
+    linear-gradient(#fff, #fff) 0 100% / 8px 8px no-repeat,
+    #2e4a8f;
+}
+
+.brand-name { font-weight: 600; letter-spacing: .2px; }
+
+.tabs { display: flex; gap: 4px; }
+
+.tab {
+  margin: 0;
+  padding: 7px 14px;
+  color: var(--muted);
+  background: transparent;
+  border-radius: 7px;
+}
+
+.tab:hover { color: var(--text); background: var(--surface-2); }
+.tab.active { color: var(--text); background: var(--surface-2); }
+
+.class-state { margin: 0 0 0 auto; color: var(--muted); font-size: 14px; }
+
+/* --- полоса режима урока ------------------------------------------------- */
+
+.lesson-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.lesson-label { margin-right: 4px; color: var(--muted); font-size: 14px; }
+
+.lesson-scope {
+  margin-left: auto;
+  padding: 4px 10px;
+  color: var(--muted);
+  font-size: 13px;
+  background: var(--surface-2);
+  border-radius: 20px;
+}
+
+/* Режимы урока — самое частое действие, поэтому они крупнее остальных. */
+.mode { padding: 10px 20px; font-weight: 600; }
+
+/* --- рабочая область ----------------------------------------------------- */
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+}
+
+/* Выбранный компьютер открывается сбоку, а не вместо класса: преподаватель
+   не должен терять из виду остальных, работая с одним. */
+.workspace:has(.detail) { grid-template-columns: minmax(0, 1fr) 380px; }
+
+.screens { min-height: 0; overflow-y: auto; padding: 16px 20px; }
+
+/* Класс на 20 машин должен помещаться на экран целиком: миниатюра нужна для
+   беглого взгляда, а не для чтения текста на ней — для этого есть «крупно». */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.screen-card {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.screen-card:hover { border-color: #3d4a6b; }
+
+/* Открытый и отмеченный — разные вещи, и различаться они обязаны с одного
+   взгляда: рамка означает «этот открыт справа», заливка — «попадёт под
+   групповую команду». Одинаковая подсветка приводила бы к команде не туда. */
+.screen-card.checked { background: #1d2a44; border-color: #38508a; }
+.screen-card.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+.screen-frame {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 10;
+  background: #0a0e18;
+}
+
+.screen-frame img { width: 100%; height: 100%; object-fit: contain; }
+
+.no-frame { color: #5b6880; font-size: 13px; }
+
+.screen-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.screen-meta input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.screen-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Состояние компьютера — точка рядом с именем: беглый взгляд на класс должен
+   показывать проблему, не заставляя открывать таблицу. */
+.dot { width: 8px; height: 8px; margin-left: auto; border-radius: 50%; background: var(--muted); }
+.dot.healthy { background: var(--ok); }
+.dot.warning { background: var(--warn); }
+.dot.critical { background: var(--danger); }
+
+.empty { display: grid; place-content: center; gap: 12px; height: 100%; color: var(--muted); text-align: center; }
+
+/* --- панель выбранного компьютера ---------------------------------------- */
+
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+}
+
+.detail-head { display: flex; align-items: center; gap: 10px; }
+.detail-head h2 { margin: 0; font-size: 17px; }
+
+.badge {
+  padding: 3px 9px;
+  color: #0f1523;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--ok);
+  border-radius: 20px;
+}
+
+.detail-screen {
+  flex: none;
+  width: 100%;
+  /* Пропорция кадра важнее его высоты: без потолка панель растёт вслед за
+     размером окна и вытесняет собственные кнопки под прокрутку. */
+  max-height: 40vh;
+  aspect-ratio: 16 / 10;
+  object-fit: contain;
+  background: #0a0e18;
+  border-radius: 8px;
+}
+
+/* Во время управления курсор мыши принадлежит ученику: подсказываем это
+   видом самой картинки. */
+.detail-screen.live { outline: 2px solid var(--ok); cursor: crosshair; }
+.detail-screen.placeholder { display: grid; place-items: center; color: #5b6880; font-size: 13px; }
+
+.detail-health { margin: 0; color: var(--muted); font-size: 13px; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.danger-zone { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--line); }
+
+/* --- панель выбранных ---------------------------------------------------- */
+
+.selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 20px;
+  background: var(--accent-strong);
+  border-top: 1px solid #1d4ed8;
+}
+
+.selection-count { margin-right: 4px; font-weight: 600; }
+.selection-bar .ghost { border-color: #ffffff55; }
+.selection-bar button { background: #ffffff1f; }
+.selection-bar button:hover { background: #ffffff33; }
+
+/* --- нижняя панель ------------------------------------------------------- */
+
+.bottom-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+}
+
+.status {
+  margin: 0 0 0 auto;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- кнопки -------------------------------------------------------------- */
+
+button {
+  margin: 0;
+  padding: 8px 14px;
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+  background: var(--accent);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+button:hover { background: var(--accent-strong); }
+button:disabled { opacity: .4; cursor: not-allowed; }
+button:disabled:hover { background: var(--accent); }
+
+.ghost { color: var(--text); background: transparent; border-color: var(--line); }
+.ghost:hover { background: var(--surface-2); }
+
+/* Необратимые действия не должны выглядеть как обычные. */
+.danger { color: var(--danger); background: transparent; border-color: #5b2b2b; }
+.danger:hover { color: #fff; background: #b91c1c; border-color: #b91c1c; }
+
+/* --- экран настройки ----------------------------------------------------- */
+
+.setup {
+  grid-row: 2 / -1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.setup > * { max-width: 720px; margin-inline: auto; }
+
+.panel {
+  margin-bottom: 16px;
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.panel h2 { margin: 0 0 6px; font-size: 16px; }
+
+.subtitle { margin: 0 0 12px; color: var(--muted); font-size: 14px; }
+
+label { display: block; margin: 12px 0; color: var(--muted); font-size: 14px; }
+
+input {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  padding: 9px 11px;
+  color: var(--text);
+  font: inherit;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.code { font-size: 19px; letter-spacing: 1px; }
+
+.enroll { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.enroll button { margin-right: 6px; }
+
+.health { width: 100%; margin-top: 14px; font-size: 14px; border-collapse: collapse; }
+.health th { color: var(--muted); font-weight: 500; }
+.health th, .health td { padding: 7px 8px; text-align: left; border-bottom: 1px solid var(--line); }
+
+.membership {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.membership span { flex: 1 1 200px; font-size: 14px; }
 .membership:last-of-type { border-bottom: 0; }
+
+/* Узкое окно: боковая панель уходит под сетку, чтобы экраны не сжимались до
+   нечитаемого размера. Порог выше минимальной ширины окна (960): при 380 px
+   на панель сетке осталось бы два столбца, и класс перестал бы читаться. */
+@media (max-width: 1100px) {
+  .workspace:has(.detail) {
+    grid-template-columns: minmax(0, 1fr);
+    /* Панель ограничена долей окна: без потолка её содержимое вытесняло бы
+       сетку класса за пределы экрана целиком. */
+    grid-template-rows: minmax(0, 1fr) minmax(0, 42vh);
+  }
+
+  .detail { border-left: 0; border-top: 1px solid var(--line); }
+  .detail-head { position: sticky; top: -16px; padding: 4px 0; background: var(--surface); }
+  /* В сложенном режиме высота панели фиксирована, поэтому кадр уступает
+     место кнопкам: смотреть экран крупно здесь всё равно неудобно, а
+     дотянуться до действий нужно без прокрутки. */
+  .detail-screen { max-height: 20vh; }
+}

@@ -150,7 +150,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
-          $issues = Invoke-ScriptAnalyzer -Path scripts -Recurse -Severity Error, Warning
+          $issues = Invoke-ScriptAnalyzer -Path scripts -Recurse `
+            -Severity Error, Warning `
+            -Settings scripts/PSScriptAnalyzerSettings.psd1
           if ($issues) {
             $issues | Format-Table -AutoSize | Out-String | Write-Host
             throw "PSScriptAnalyzer нашёл $($issues.Count) замечаний"
@@ -175,6 +177,13 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: apps/teacher/pnpm-lock.yaml
+
+      # Backend консоли зависит от крейта protocol, а тот генерирует типы из
+      # proto-схем на сборке. Без protoc падает не тест, а сам бандл.
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Rust stable (x86_64-pc-windows-msvc)
         uses: dtolnay/rust-toolchain@stable
@@ -241,10 +250,11 @@ jobs:
           Copy-Item target\x86_64-pc-windows-msvc\release\classos-session.exe target\release\
           Copy-Item target\x86_64-pc-windows-msvc\release\classos-updater.exe target\release\
 
-      # Механическая часть блока T0 чеклиста приёмки. Раннер не имеет
-      # интерактивной консольной сессии, поэтому зависящие от Session Host
-      # пункты скрипт отметит NOT-RUN — они закрываются только на машине с
-      # реальным входом пользователя.
+      # Механическая часть блока T0 чеклиста приёмки. Раннер имеет
+      # консольную сессию, поэтому Session Host здесь действительно
+      # запускается и его перезапуск замеряется. Вход и выход пользователя,
+      # блокировка экрана, перезагрузка и вторая учётная запись остаются за
+      # человеком — скрипт помечает их NOT-RUN.
       - name: Прогнать механическую часть T0
         shell: pwsh
         run: .\scripts\acceptance-t0.ps1 -IdleSeconds 60 -RestartCycles 5

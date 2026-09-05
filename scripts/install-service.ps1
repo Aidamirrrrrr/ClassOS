@@ -1,4 +1,4 @@
-#Requires -RunAsAdministrator
+﻿#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     Устанавливает Windows-службу ClassOS Agent (спека T0 §91-93).

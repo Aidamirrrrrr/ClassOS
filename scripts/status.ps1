@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Показывает состояние службы ClassOS Agent, процессы Session Host и
     последние строки журнала для smoke test T0.

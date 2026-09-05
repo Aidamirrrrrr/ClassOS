@@ -37,11 +37,27 @@ const STATE_TEXT: Record<string, string> = {
   unknown: "Неизвестно",
 };
 
+/// Человекочитаемое описание проблем устройства одной строкой.
+function healthSummary(report: Health | undefined): string {
+  if (!report) return "";
+  return [
+    ...report.warnings.map((code) => WARNING_TEXT[code] ?? code),
+    ...report.drift.map((entry) => entry.kind === "missing"
+      ? `нет ${entry.application_id}`
+      : `${entry.application_id}: ${entry.actual_version} вместо ${entry.required_version}`),
+  ].join("; ");
+}
+
 function versionedUrl(url: string, sequence: number) {
   return `${url}?sequence=${sequence}`;
 }
 
 function App() {
+  // Урок и настройка разведены по разным экранам: вход в учётную запись и
+  // регистрацию устройств делают один раз, а класс преподаватель открывает
+  // каждое занятие. Смешивать их в одной прокручиваемой странице — значит
+  // заставлять его каждый раз пролистывать чужую работу.
+  const [view, setView] = useState<"lesson" | "setup">("lesson");
   const [devices, setDevices] = useState<Device[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [code, setCode] = useState<Code | null>(null);
@@ -316,104 +332,207 @@ function App() {
     void invoke("send_remote_wheel", { deviceId: device.device_id, delta: Math.round(-event.deltaY) });
   }
 
-  return <main className="container">
-    <h1>ClassOS Teacher Console</h1>
-    <p className="subtitle">Экраны класса, режимы урока и состояние компьютеров</p>
-    <section className="panel" aria-label="Cloud">
-      <h2>Cloud</h2>
-      {memberships.length === 0 ? <>
-        <label>Адрес<input value={cloudUrl} onChange={(event) => setCloudUrl(event.currentTarget.value)} /></label>
-        <label>Почта<input type="email" autoComplete="username" value={cloudEmail} onChange={(event) => setCloudEmail(event.currentTarget.value)} /></label>
-        <label>Пароль<input type="password" autoComplete="current-password" value={cloudPassword} onChange={(event) => setCloudPassword(event.currentTarget.value)} /></label>
-        <button onClick={signIn} disabled={!cloudEmail || !cloudPassword}>Войти</button>
-        <p className="subtitle">Без Cloud консоль работает с устройствами, зарегистрированными локально.</p>
-      </> : <>
-        <p className="subtitle">{leaseExpiresAt
-          ? `Доступ к кабинету действует до ${new Date(leaseExpiresAt).toLocaleTimeString()}`
-          : "Доступ к кабинету не получен — устройства из Cloud откажут в подключении"}</p>
-        {memberships.map((membership) => <div key={`${membership.organizationId}-${membership.branchId ?? "org"}`} className="membership">
-          <span>{membership.role}{membership.branchId ? ` · филиал ${membership.branchId.slice(0, 8)}` : " · вся организация"}</span>
-          <button onClick={() => void issueLease(membership)}>Получить доступ</button>
-          <button onClick={() => void createCloudCode(membership)}>Код регистрации</button>
-        </div>)}
-        <button onClick={signOut}>Выйти</button>
-      </>}
-    </section>
-    <section className="panel">
-      <button onClick={toggleDiscovery}>{discovering ? "Остановить поиск" : "Найти устройства"}</button>
-      <button onClick={createCode}>Создать локальный код</button>
-      <button onClick={startGrid} disabled={devices.length === 0}>Запустить grid</button>
-      <button onClick={selectAllCommandDevices} disabled={devices.length === 0}>{commandDeviceIds.length === devices.length ? "Снять выбор" : "Выбрать всех"}</button>
-      <button onClick={() => void runCommand("lock", "", commandDeviceIds)} disabled={commandDeviceIds.length === 0}>Заблокировать выбранных</button>
-      <button onClick={() => void runCommand("unlock", "", commandDeviceIds)} disabled={commandDeviceIds.length === 0}>Разблокировать выбранных</button>
-      {code && <p className="code">Код: <strong>{code.code}</strong></p>}
-    </section>
-    <section className="panel" aria-label="Политика урока">
-      <h2>Урок</h2>
-      <p className="subtitle">{policyTargets.length > 0
-        ? `Действует на устройств: ${policyTargets.length}`
-        : "Нет устройств"}</p>
-      <button onClick={() => void runCommand("policy", "python", policyTargets)} disabled={policyTargets.length === 0}>Python</button>
-      <button onClick={() => void runCommand("policy", "web", policyTargets)} disabled={policyTargets.length === 0}>Web</button>
-      <button onClick={() => void runCommand("focus", "vscode", policyTargets)} disabled={policyTargets.length === 0}>Focus Mode</button>
-      <button onClick={() => void runCommand("focus_off", "", policyTargets)} disabled={policyTargets.length === 0}>Выключить Focus</button>
-      <button onClick={() => void runCommand("policy_off", "", policyTargets)} disabled={policyTargets.length === 0}>Снять политику</button>
-    </section>
-    <section className="panel" aria-label="Состояние кабинета">
-      <h2>Кабинет</h2>
-      <button onClick={() => void checkHealth(policyTargets)} disabled={policyTargets.length === 0}>Проверить состояние</button>
-      <button onClick={() => void runCommand("repair", "python-classroom", policyTargets)} disabled={policyTargets.length === 0}>Привести к профилю Python</button>
-      {devices.length > 0 && <table className="health">
-        <thead><tr><th>Устройство</th><th>Состояние</th><th>Диск</th><th>Что не так</th></tr></thead>
-        <tbody>
-          {devices.map((value) => {
-            const report = health[value.device_id];
-            return <tr key={value.device_id}>
-              <td>{value.hostname}</td>
-              <td>{report ? STATE_TEXT[report.state] ?? report.state : "—"}</td>
-              <td>{report ? `${Math.round(report.disk_percent)}%` : "—"}</td>
-              <td>{report
-                ? [
-                    ...report.warnings.map((code) => WARNING_TEXT[code] ?? code),
-                    ...report.drift.map((entry) => entry.kind === "missing"
-                      ? `нет ${entry.application_id}`
-                      : `${entry.application_id}: ${entry.actual_version} вместо ${entry.required_version}`),
-                  ].join("; ") || "—"
-                : "—"}</td>
-            </tr>;
-          })}
-        </tbody>
-      </table>}
-    </section>
-    {devices.length > 0 && <section className="grid" aria-label="Экраны устройств">
-      {devices.map((value) => <article className={`device-card ${value.device_id === selectedDeviceId ? "selected" : ""}`} key={value.device_id} onClick={() => setSelectedDeviceId(value.device_id)}>
-        <label className="device-select" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={commandDeviceIds.includes(value.device_id)} onChange={() => toggleCommandDevice(value.device_id)} /> Выбрать для команд</label>
-        <strong>{value.hostname}</strong>
-        <small>{value.ip}:{value.control_port}</small>
-        {frameUrls[value.device_id] ? <img className="thumbnail" src={frameUrls[value.device_id]} alt={`Экран ${value.hostname}`} /> : <span>Нет кадра</span>}
-      </article>)}
-    </section>}
-    {device && <section className="panel">
-      <h2>{device.hostname}</h2>
-      <p>{device.ip}:{device.control_port} · {device.device_id}</p>
-      <label>Enrollment-код<input value={enrollmentCode} onChange={(event) => setEnrollmentCode(event.currentTarget.value)} /></label>
-      <button onClick={enroll} disabled={!enrollmentCode}>Зарегистрировать устройство</button>
-      <button onClick={screenshot}>Сделать снимок экрана</button>
-      <button onClick={() => startStream(device.device_id, true)}>Открыть live view</button>
-      <button onClick={() => stopStream(device.device_id)}>Остановить поток</button>
-      <button onClick={() => void runCommand("lock")}>Заблокировать</button>
-      <button onClick={() => void runCommand("unlock")}>Разблокировать</button>
-      <button onClick={() => { const text = window.prompt("Текст сообщения"); if (text) void runCommand("message", text); }}>Сообщение</button>
-      <button onClick={() => void runCommand("application", "vscode")}>Открыть VS Code</button>
-      <button onClick={() => { const url = window.prompt("HTTP(S) URL"); if (url) void runCommand("url", url); }}>Открыть URL</button>
-      <button onClick={() => confirmAnd("Перезагрузить этот компьютер?", "restart")}>Перезагрузить</button>
-      <button onClick={() => confirmAnd("Выключить этот компьютер?", "shutdown")}>Выключить</button>
-      <button onClick={takeControl} disabled={controllingDeviceId === device.device_id}>Взять управление</button>
-      <button onClick={stopControl} disabled={controllingDeviceId !== device.device_id}>Остановить управление</button>
-      {frameUrls[device.device_id] && <img className="screenshot" src={frameUrls[device.device_id]} onPointerMove={movePointer} onPointerDown={clickPointer} onWheel={wheelPointer} alt="Снимок экрана устройства" />}
-    </section>}
-    <p className="status">{message}</p>
-  </main>;
+  const selectedCount = commandDeviceIds.length;
+  const controlling = device !== null && controllingDeviceId === device.device_id;
+
+  return <div className="app">
+    <header className="topbar">
+      <div className="brand">
+        <span className="brand-mark" aria-hidden="true" />
+        <span className="brand-name">ClassOS</span>
+      </div>
+      <nav className="tabs" aria-label="Разделы">
+        <button className={view === "lesson" ? "tab active" : "tab"} onClick={() => setView("lesson")}>Урок</button>
+        <button className={view === "setup" ? "tab active" : "tab"} onClick={() => setView("setup")}>Настройка</button>
+      </nav>
+      <p className="class-state">
+        {devices.length === 0
+          ? "Класс пуст"
+          : `${devices.length} ${devices.length === 1 ? "компьютер" : "компьютеров"} на связи`}
+      </p>
+    </header>
+
+    {view === "lesson" ? <>
+      {/* Режим урока применяется ко всему классу. Это самое частое действие
+          преподавателя, поэтому оно на виду и стоит один клик. */}
+      <section className="lesson-bar" aria-label="Режим урока">
+        <span className="lesson-label">Режим урока</span>
+        <button className="mode" onClick={() => void runCommand("policy", "python", policyTargets)} disabled={policyTargets.length === 0}>Python</button>
+        <button className="mode" onClick={() => void runCommand("policy", "web", policyTargets)} disabled={policyTargets.length === 0}>Веб</button>
+        <button className="mode" onClick={() => void runCommand("focus", "vscode", policyTargets)} disabled={policyTargets.length === 0}>Только редактор</button>
+        <button className="ghost" onClick={() => void runCommand("focus_off", "", policyTargets)} disabled={policyTargets.length === 0}>Снять ограничение</button>
+        <button className="ghost" onClick={() => void runCommand("policy_off", "", policyTargets)} disabled={policyTargets.length === 0}>Обычный режим</button>
+        <span className="lesson-scope">
+          {selectedCount > 0 ? `выбранным: ${selectedCount}` : "всему классу"}
+        </span>
+      </section>
+
+      <div className="workspace">
+        <section className="screens" aria-label="Экраны класса">
+          {devices.length === 0
+            ? <div className="empty">
+                <p>Компьютеры ещё не найдены.</p>
+                <button onClick={() => setView("setup")}>Перейти к настройке</button>
+              </div>
+            : <div className="grid">
+                {devices.map((value) => {
+                  const report = health[value.device_id];
+                  const isCurrent = value.device_id === selectedDeviceId;
+                  const isChecked = commandDeviceIds.includes(value.device_id);
+                  return <article
+                    key={value.device_id}
+                    className={`screen-card${isCurrent ? " current" : ""}${isChecked ? " checked" : ""}`}
+                    onClick={() => setSelectedDeviceId(value.device_id)}
+                  >
+                    <div className="screen-frame">
+                      {frameUrls[value.device_id]
+                        ? <img src={frameUrls[value.device_id]} alt={`Экран ${value.hostname}`} />
+                        : <span className="no-frame">Экран не открыт</span>}
+                    </div>
+                    <footer className="screen-meta">
+                      <input
+                        type="checkbox"
+                        aria-label={`Выбрать ${value.hostname}`}
+                        checked={isChecked}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={() => toggleCommandDevice(value.device_id)}
+                      />
+                      <span className="screen-name">{value.hostname}</span>
+                      {report && <span
+                        className={`dot ${report.state}`}
+                        title={healthSummary(report) || STATE_TEXT[report.state] || report.state}
+                      />}
+                    </footer>
+                  </article>;
+                })}
+              </div>}
+        </section>
+
+        {device && <aside className="detail" aria-label={`Компьютер ${device.hostname}`}>
+          <header className="detail-head">
+            <h2>{device.hostname}</h2>
+            {controlling && <span className="badge">Вы управляете</span>}
+          </header>
+
+          {frameUrls[device.device_id]
+            ? <img
+                className={`detail-screen${controlling ? " live" : ""}`}
+                src={frameUrls[device.device_id]}
+                onPointerMove={movePointer}
+                onPointerDown={clickPointer}
+                onWheel={wheelPointer}
+                alt={`Экран ${device.hostname}`}
+              />
+            : <div className="detail-screen placeholder">Экран не открыт</div>}
+
+          <div className="actions">
+            <button onClick={() => startStream(device.device_id, true)}>Открыть крупно</button>
+            <button className="ghost" onClick={() => stopStream(device.device_id)}>Закрыть экран</button>
+            {controlling
+              ? <button className="ghost" onClick={stopControl}>Вернуть управление</button>
+              : <button onClick={takeControl}>Взять управление</button>}
+          </div>
+
+          <div className="actions">
+            <button className="ghost" onClick={() => void runCommand("lock")}>Заблокировать</button>
+            <button className="ghost" onClick={() => void runCommand("unlock")}>Разблокировать</button>
+            <button className="ghost" onClick={() => { const text = window.prompt("Текст сообщения"); if (text) void runCommand("message", text); }}>Сообщение</button>
+            <button className="ghost" onClick={() => void runCommand("application", "vscode")}>Открыть VS Code</button>
+            <button className="ghost" onClick={() => { const url = window.prompt("Адрес сайта"); if (url) void runCommand("url", url); }}>Открыть сайт</button>
+          </div>
+
+          {health[device.device_id] && <p className="detail-health">
+            {STATE_TEXT[health[device.device_id].state] ?? health[device.device_id].state}
+            {healthSummary(health[device.device_id]) && ` · ${healthSummary(health[device.device_id])}`}
+          </p>}
+
+          {/* Перезагрузка и выключение необратимы для того, кто сейчас за
+              компьютером, поэтому вынесены вниз и выглядят иначе. */}
+          <div className="actions danger-zone">
+            <button className="danger" onClick={() => confirmAnd("Перезагрузить этот компьютер?", "restart")}>Перезагрузить</button>
+            <button className="danger" onClick={() => confirmAnd("Выключить этот компьютер?", "shutdown")}>Выключить</button>
+          </div>
+        </aside>}
+      </div>
+
+      {selectedCount > 0 && <section className="selection-bar" aria-label="Действия над выбранными">
+        <span className="selection-count">Выбрано: {selectedCount}</span>
+        <button onClick={() => void runCommand("lock", "", commandDeviceIds)}>Заблокировать</button>
+        <button onClick={() => void runCommand("unlock", "", commandDeviceIds)}>Разблокировать</button>
+        <button className="ghost" onClick={() => void checkHealth(commandDeviceIds)}>Проверить</button>
+        <button className="ghost" onClick={() => void runCommand("repair", "python-classroom", commandDeviceIds)}>Доустановить программы</button>
+        <button className="ghost" onClick={selectAllCommandDevices}>Снять выбор</button>
+      </section>}
+
+      <footer className="bottom-bar">
+        <button onClick={startGrid} disabled={devices.length === 0}>Показать экраны класса</button>
+        <button className="ghost" onClick={selectAllCommandDevices} disabled={devices.length === 0}>
+          {selectedCount === devices.length && devices.length > 0 ? "Снять выбор" : "Выбрать весь класс"}
+        </button>
+        <p className="status">{message}</p>
+      </footer>
+    </> : <div className="setup">
+      <section className="panel" aria-label="Учётная запись школы">
+        <h2>Учётная запись школы</h2>
+        {memberships.length === 0 ? <>
+          <p className="subtitle">Без входа консоль работает с компьютерами, зарегистрированными на этом ноутбуке.</p>
+          <label>Адрес сервера<input value={cloudUrl} onChange={(event) => setCloudUrl(event.currentTarget.value)} /></label>
+          <label>Почта<input type="email" autoComplete="username" value={cloudEmail} onChange={(event) => setCloudEmail(event.currentTarget.value)} /></label>
+          <label>Пароль<input type="password" autoComplete="current-password" value={cloudPassword} onChange={(event) => setCloudPassword(event.currentTarget.value)} /></label>
+          <button onClick={signIn} disabled={!cloudEmail || !cloudPassword}>Войти</button>
+        </> : <>
+          <p className="subtitle">{leaseExpiresAt
+            ? `Доступ к кабинету действует до ${new Date(leaseExpiresAt).toLocaleTimeString()}`
+            : "Доступ к кабинету не получен — часть компьютеров откажет в подключении"}</p>
+          {memberships.map((membership) => <div key={`${membership.organizationId}-${membership.branchId ?? "org"}`} className="membership">
+            <span>{membership.role}{membership.branchId ? ` · филиал ${membership.branchId.slice(0, 8)}` : " · вся организация"}</span>
+            <button onClick={() => void issueLease(membership)}>Получить доступ</button>
+            <button className="ghost" onClick={() => void createCloudCode(membership)}>Код регистрации</button>
+          </div>)}
+          <button className="ghost" onClick={signOut}>Выйти</button>
+        </>}
+      </section>
+
+      <section className="panel" aria-label="Компьютеры кабинета">
+        <h2>Компьютеры кабинета</h2>
+        <div className="actions">
+          <button onClick={toggleDiscovery}>{discovering ? "Остановить поиск" : "Найти компьютеры"}</button>
+          <button className="ghost" onClick={createCode}>Создать код регистрации</button>
+        </div>
+        {code && <p className="code">Код: <strong>{code.code}</strong></p>}
+        {device && <div className="enroll">
+          <p className="subtitle">{device.hostname} · {device.ip}</p>
+          <label>Код регистрации<input value={enrollmentCode} onChange={(event) => setEnrollmentCode(event.currentTarget.value)} /></label>
+          <button onClick={enroll} disabled={!enrollmentCode}>Зарегистрировать {device.hostname}</button>
+          <button className="ghost" onClick={screenshot}>Проверить экран</button>
+        </div>}
+      </section>
+
+      <section className="panel" aria-label="Состояние компьютеров">
+        <h2>Состояние компьютеров</h2>
+        <div className="actions">
+          <button onClick={() => void checkHealth(policyTargets)} disabled={policyTargets.length === 0}>Проверить состояние</button>
+          <button className="ghost" onClick={() => void runCommand("repair", "python-classroom", policyTargets)} disabled={policyTargets.length === 0}>Доустановить программы</button>
+        </div>
+        {devices.length > 0 && <table className="health">
+          <thead><tr><th>Компьютер</th><th>Состояние</th><th>Диск</th><th>Что не так</th></tr></thead>
+          <tbody>
+            {devices.map((value) => {
+              const report = health[value.device_id];
+              return <tr key={value.device_id}>
+                <td>{value.hostname}</td>
+                <td>{report ? STATE_TEXT[report.state] ?? report.state : "—"}</td>
+                <td>{report ? `${Math.round(report.disk_percent)}%` : "—"}</td>
+                <td>{report ? healthSummary(report) || "—" : "—"}</td>
+              </tr>;
+            })}
+          </tbody>
+        </table>}
+      </section>
+
+      <p className="status">{message}</p>
+    </div>}
+  </div>;
 }
 
 export default App;

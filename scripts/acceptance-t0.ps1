@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Автоматический прогон механической части блока T0 чеклиста приёмки.
 
@@ -173,13 +173,13 @@ try {
         # Эти три события существуют только там, где есть в кого запускать
         # Session Host. На машине без входа их отсутствие — норма, а не сбой.
         $handshake = @("SESSION_DISCOVERED", "SESSION_HOST_STARTED", "IPC_HANDSHAKE_OK")
-        foreach ($event in $handshake) {
-            if ($log -match $event) {
-                Add-Result "3.1/5-$event" "$event в журнале" "PASSED" ""
+        foreach ($eventName in $handshake) {
+            if ($log -match $eventName) {
+                Add-Result "3.1/5-$eventName" "$eventName в журнале" "PASSED" ""
             } elseif ($hasSessionHost) {
-                Add-Result "3.1/5-$event" "$event в журнале" "FAILED" "Session Host запущен, но событие отсутствует"
+                Add-Result "3.1/5-$eventName" "$eventName в журнале" "FAILED" "Session Host запущен, но событие отсутствует"
             } else {
-                Add-Result "3.1/5-$event" "$event в журнале" "NOT-RUN" "нет интерактивной консольной сессии"
+                Add-Result "3.1/5-$eventName" "$eventName в журнале" "NOT-RUN" "нет интерактивной консольной сессии"
             }
         }
     }

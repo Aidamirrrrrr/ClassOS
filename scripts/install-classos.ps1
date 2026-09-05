@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Установщик ClassOS Agent (spec T8 §9).
 
